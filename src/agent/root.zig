@@ -963,7 +963,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
             .{ .claude_cli = p }
         else |_|
             .{ .openrouter = providers.openrouter.OpenRouterProvider.init(allocator, cfg.api_key) },
-        .codex_cli_provider => if (providers.claude_cli.CodexCliProvider.init(allocator, null)) |p|
+        .codex_cli_provider => if (providers.codex_cli.CodexCliProvider.init(allocator, null)) |p|
             .{ .codex_cli = p }
         else |_|
             .{ .openrouter = providers.openrouter.OpenRouterProvider.init(allocator, cfg.api_key) },
