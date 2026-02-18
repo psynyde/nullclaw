@@ -69,12 +69,10 @@ pub const ShellTool = struct {
             };
             defer allocator.free(resolved_cwd);
 
-            const ws_resolved = std.fs.cwd().realpathAlloc(allocator, self.workspace_dir) catch {
-                return ToolResult.fail("Failed to resolve workspace directory");
-            };
-            defer allocator.free(ws_resolved);
+            const ws_resolved: ?[]const u8 = std.fs.cwd().realpathAlloc(allocator, self.workspace_dir) catch null;
+            defer if (ws_resolved) |wr| allocator.free(wr);
 
-            if (!isResolvedPathAllowed(allocator, resolved_cwd, ws_resolved, self.allowed_paths))
+            if (!isResolvedPathAllowed(allocator, resolved_cwd, ws_resolved orelse "", self.allowed_paths))
                 return ToolResult.fail("cwd is outside allowed areas");
 
             break :blk cwd;

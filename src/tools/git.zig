@@ -4,10 +4,12 @@ const ToolResult = @import("root.zig").ToolResult;
 const parseStringField = @import("shell.zig").parseStringField;
 const parseBoolField = @import("shell.zig").parseBoolField;
 const parseIntField = @import("shell.zig").parseIntField;
+const isResolvedPathAllowed = @import("file_edit.zig").isResolvedPathAllowed;
 
 /// Git operations tool for structured repository management.
 pub const GitTool = struct {
     workspace_dir: []const u8,
+    allowed_paths: []const []const u8 = &.{},
 
     const vtable = Tool.VTable{
         .execute = &vtableExecute,
@@ -38,7 +40,7 @@ pub const GitTool = struct {
 
     fn vtableParams(_: *anyopaque) []const u8 {
         return 
-        \\{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message (for commit)"},"paths":{"type":"string","description":"File paths (for add)"},"branch":{"type":"string","description":"Branch name (for checkout)"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes (diff)"},"limit":{"type":"integer","description":"Log entry count (default: 10)"}},"required":["operation"]}
+        \\{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message (for commit)"},"paths":{"type":"string","description":"File paths (for add)"},"branch":{"type":"string","description":"Branch name (for checkout)"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes (diff)"},"limit":{"type":"integer","description":"Log entry count (default: 10)"},"cwd":{"type":"string","description":"Repository directory (absolute path within allowed paths; defaults to workspace)"}},"required":["operation"]}
         ;
     }
 
@@ -131,20 +133,38 @@ pub const GitTool = struct {
             }
         }
 
-        if (std.mem.eql(u8, operation, "status")) return self.gitStatus(allocator);
-        if (std.mem.eql(u8, operation, "diff")) return self.gitDiff(allocator, args_json);
-        if (std.mem.eql(u8, operation, "log")) return self.gitLog(allocator, args_json);
-        if (std.mem.eql(u8, operation, "branch")) return self.gitBranch(allocator);
-        if (std.mem.eql(u8, operation, "commit")) return self.gitCommit(allocator, args_json);
-        if (std.mem.eql(u8, operation, "add")) return self.gitAdd(allocator, args_json);
-        if (std.mem.eql(u8, operation, "checkout")) return self.gitCheckout(allocator, args_json);
-        if (std.mem.eql(u8, operation, "stash")) return self.gitStash(allocator, args_json);
+        // Resolve optional cwd override
+        const effective_cwd = if (parseStringField(args_json, "cwd")) |cwd| blk: {
+            if (cwd.len == 0 or cwd[0] != '/')
+                return ToolResult.fail("cwd must be an absolute path");
+            if (self.allowed_paths.len == 0)
+                return ToolResult.fail("cwd not allowed (no allowed_paths configured)");
+            const resolved_cwd = std.fs.cwd().realpathAlloc(allocator, cwd) catch |err| {
+                const err_msg = try std.fmt.allocPrint(allocator, "Failed to resolve cwd: {}", .{err});
+                return ToolResult{ .success = false, .output = "", .error_msg = err_msg };
+            };
+            defer allocator.free(resolved_cwd);
+            const ws_resolved: ?[]const u8 = std.fs.cwd().realpathAlloc(allocator, self.workspace_dir) catch null;
+            defer if (ws_resolved) |wr| allocator.free(wr);
+            if (!isResolvedPathAllowed(allocator, resolved_cwd, ws_resolved orelse "", self.allowed_paths))
+                return ToolResult.fail("cwd is outside allowed areas");
+            break :blk cwd;
+        } else self.workspace_dir;
+
+        if (std.mem.eql(u8, operation, "status")) return self.runGitOp(allocator, effective_cwd, &.{ "status", "--porcelain=2", "--branch" });
+        if (std.mem.eql(u8, operation, "diff")) return self.gitDiff(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "log")) return self.gitLog(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "branch")) return self.runGitOp(allocator, effective_cwd, &.{ "branch", "--format=%(refname:short)|%(HEAD)" });
+        if (std.mem.eql(u8, operation, "commit")) return self.gitCommit(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "add")) return self.gitAdd(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "checkout")) return self.gitCheckout(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "stash")) return self.gitStash(allocator, effective_cwd, args_json);
 
         const msg = try std.fmt.allocPrint(allocator, "Unknown operation: {s}", .{operation});
         return ToolResult{ .success = false, .output = "", .error_msg = msg };
     }
 
-    fn runGit(self: *GitTool, allocator: std.mem.Allocator, args: []const []const u8) !struct { stdout: []u8, stderr: []u8, success: bool } {
+    fn runGit(_: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: []const []const u8) !struct { stdout: []u8, stderr: []u8, success: bool } {
         var argv_buf: [32][]const u8 = undefined;
         argv_buf[0] = "git";
         const arg_count = @min(args.len, argv_buf.len - 1);
@@ -153,7 +173,7 @@ pub const GitTool = struct {
         }
 
         var child = std.process.Child.init(argv_buf[0 .. arg_count + 1], allocator);
-        child.cwd = self.workspace_dir;
+        child.cwd = git_cwd;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
 
@@ -169,18 +189,19 @@ pub const GitTool = struct {
         return .{ .stdout = stdout, .stderr = stderr, .success = success };
     }
 
-    fn gitStatus(self: *GitTool, allocator: std.mem.Allocator) !ToolResult {
-        const result = try self.runGit(allocator, &.{ "status", "--porcelain=2", "--branch" });
+    /// Run a simple git operation and return stdout on success.
+    fn runGitOp(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: []const []const u8) !ToolResult {
+        const result = try self.runGit(allocator, git_cwd, args);
         defer allocator.free(result.stderr);
         if (!result.success) {
             defer allocator.free(result.stdout);
-            const msg = try allocator.dupe(u8, if (result.stderr.len > 0) result.stderr else "Git status failed");
+            const msg = try allocator.dupe(u8, if (result.stderr.len > 0) result.stderr else "Git operation failed");
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         }
         return ToolResult{ .success = true, .output = result.stdout };
     }
 
-    fn gitDiff(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn gitDiff(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
         const cached = parseBoolField(args_json, "cached") orelse false;
         const files = parseStringField(args_json, "files") orelse ".";
 
@@ -199,7 +220,7 @@ pub const GitTool = struct {
         argv_buf[argc] = files;
         argc += 1;
 
-        const result = try self.runGit(allocator, argv_buf[0..argc]);
+        const result = try self.runGit(allocator, git_cwd, argv_buf[0..argc]);
         defer allocator.free(result.stderr);
         if (!result.success) {
             defer allocator.free(result.stdout);
@@ -209,14 +230,14 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = result.stdout };
     }
 
-    fn gitLog(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn gitLog(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
         const limit_raw = parseIntField(args_json, "limit") orelse 10;
         const limit: usize = @intCast(@min(@max(limit_raw, 1), 1000));
 
         var limit_buf: [16]u8 = undefined;
         const limit_str = try std.fmt.bufPrint(&limit_buf, "-{d}", .{limit});
 
-        const result = try self.runGit(allocator, &.{
+        const result = try self.runGit(allocator, git_cwd, &.{
             "log",
             limit_str,
             "--pretty=format:%H|%an|%ae|%ad|%s",
@@ -231,18 +252,7 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = result.stdout };
     }
 
-    fn gitBranch(self: *GitTool, allocator: std.mem.Allocator) !ToolResult {
-        const result = try self.runGit(allocator, &.{ "branch", "--format=%(refname:short)|%(HEAD)" });
-        defer allocator.free(result.stderr);
-        if (!result.success) {
-            defer allocator.free(result.stdout);
-            const msg = try allocator.dupe(u8, if (result.stderr.len > 0) result.stderr else "Git branch failed");
-            return ToolResult{ .success = false, .output = "", .error_msg = msg };
-        }
-        return ToolResult{ .success = true, .output = result.stdout };
-    }
-
-    fn gitCommit(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn gitCommit(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
         const raw_message = parseStringField(args_json, "message") orelse
             return ToolResult.fail("Missing 'message' parameter for commit");
 
@@ -250,7 +260,7 @@ pub const GitTool = struct {
 
         const message = truncateCommitMessage(raw_message, 2000);
 
-        const result = try self.runGit(allocator, &.{ "commit", "-m", message });
+        const result = try self.runGit(allocator, git_cwd, &.{ "commit", "-m", message });
         defer allocator.free(result.stderr);
         if (!result.success) {
             defer allocator.free(result.stdout);
@@ -262,11 +272,11 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = out };
     }
 
-    fn gitAdd(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn gitAdd(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
         const paths = parseStringField(args_json, "paths") orelse
             return ToolResult.fail("Missing 'paths' parameter for add");
 
-        const result = try self.runGit(allocator, &.{ "add", "--", paths });
+        const result = try self.runGit(allocator, git_cwd, &.{ "add", "--", paths });
         defer allocator.free(result.stderr);
         defer allocator.free(result.stdout);
         if (!result.success) {
@@ -277,7 +287,7 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = out };
     }
 
-    fn gitCheckout(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn gitCheckout(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
         const branch = parseStringField(args_json, "branch") orelse
             return ToolResult.fail("Missing 'branch' parameter for checkout");
 
@@ -290,7 +300,7 @@ pub const GitTool = struct {
             return ToolResult.fail("Branch name contains invalid characters");
         }
 
-        const result = try self.runGit(allocator, &.{ "checkout", branch });
+        const result = try self.runGit(allocator, git_cwd, &.{ "checkout", branch });
         defer allocator.free(result.stderr);
         defer allocator.free(result.stdout);
         if (!result.success) {
@@ -301,11 +311,11 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = out };
     }
 
-    fn gitStash(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn gitStash(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
         const action = parseStringField(args_json, "action") orelse "push";
 
         if (std.mem.eql(u8, action, "push") or std.mem.eql(u8, action, "save")) {
-            const result = try self.runGit(allocator, &.{ "stash", "push", "-m", "auto-stash" });
+            const result = try self.runGit(allocator, git_cwd, &.{ "stash", "push", "-m", "auto-stash" });
             defer allocator.free(result.stderr);
             if (!result.success) {
                 defer allocator.free(result.stdout);
@@ -316,7 +326,7 @@ pub const GitTool = struct {
         }
 
         if (std.mem.eql(u8, action, "pop")) {
-            const result = try self.runGit(allocator, &.{ "stash", "pop" });
+            const result = try self.runGit(allocator, git_cwd, &.{ "stash", "pop" });
             defer allocator.free(result.stderr);
             if (!result.success) {
                 defer allocator.free(result.stdout);
@@ -327,7 +337,7 @@ pub const GitTool = struct {
         }
 
         if (std.mem.eql(u8, action, "list")) {
-            const result = try self.runGit(allocator, &.{ "stash", "list" });
+            const result = try self.runGit(allocator, git_cwd, &.{ "stash", "list" });
             defer allocator.free(result.stderr);
             if (!result.success) {
                 defer allocator.free(result.stdout);

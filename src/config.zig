@@ -263,7 +263,17 @@ pub const Config = struct {
         try w.print("    \"level\": \"{s}\",\n", .{@tagName(self.autonomy.level)});
         try w.print("    \"workspace_only\": {s},\n", .{if (self.autonomy.workspace_only) "true" else "false"});
         try w.print("    \"max_actions_per_hour\": {d},\n", .{self.autonomy.max_actions_per_hour});
-        try w.print("    \"max_cost_per_day_cents\": {d}\n", .{self.autonomy.max_cost_per_day_cents});
+        if (self.autonomy.allowed_paths.len > 0) {
+            try w.print("    \"max_cost_per_day_cents\": {d},\n", .{self.autonomy.max_cost_per_day_cents});
+            try w.print("    \"allowed_paths\": [", .{});
+            for (self.autonomy.allowed_paths, 0..) |p, i| {
+                if (i > 0) try w.print(", ", .{});
+                try w.print("\"{s}\"", .{p});
+            }
+            try w.print("]\n", .{});
+        } else {
+            try w.print("    \"max_cost_per_day_cents\": {d}\n", .{self.autonomy.max_cost_per_day_cents});
+        }
         try w.print("  }},\n", .{});
 
         // Heartbeat
