@@ -39,6 +39,9 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
     if (root.get("api_url")) |v| {
         if (v == .string) self.api_url = try self.allocator.dupe(u8, v.string);
     }
+    if (root.get("groq_api_key")) |v| {
+        if (v == .string) self.groq_api_key = try self.allocator.dupe(u8, v.string);
+    }
     if (root.get("default_temperature")) |v| {
         if (v == .float) self.default_temperature = v.float;
         if (v == .integer) self.default_temperature = @floatFromInt(v.integer);

@@ -226,16 +226,18 @@ pub const TelegramChannel = struct {
     allowed_users: []const []const u8,
     last_update_id: i64,
     proxy: ?[]const u8,
+    groq_api_key: ?[]const u8,
 
     pub const MAX_MESSAGE_LEN: usize = 4096;
 
-    pub fn init(allocator: std.mem.Allocator, bot_token: []const u8, allowed_users: []const []const u8) TelegramChannel {
+    pub fn init(allocator: std.mem.Allocator, bot_token: []const u8, allowed_users: []const []const u8, groq_api_key: ?[]const u8) TelegramChannel {
         return .{
             .allocator = allocator,
             .bot_token = bot_token,
             .allowed_users = allowed_users,
             .last_update_id = 0,
             .proxy = null,
+            .groq_api_key = groq_api_key,
         };
     }
 
@@ -593,7 +595,7 @@ pub const TelegramChannel = struct {
     /// Poll for updates using long-polling (getUpdates) via curl.
     /// Returns a slice of ChannelMessages allocated on the given allocator.
     /// Voice and audio messages are automatically transcribed via Groq Whisper
-    /// when GROQ_API_KEY is set.
+    /// when a Groq API key is configured (config or GROQ_API_KEY env var).
     pub fn pollUpdates(self: *TelegramChannel, allocator: std.mem.Allocator) ![]root.ChannelMessage {
         var url_buf: [512]u8 = undefined;
         const url = try self.apiUrl(&url_buf, "getUpdates");
@@ -692,7 +694,7 @@ pub const TelegramChannel = struct {
                     const file_id_val = vobj.object.get("file_id") orelse break :blk_content null;
                     const file_id = if (file_id_val == .string) file_id_val.string else break :blk_content null;
 
-                    if (voice.transcribeTelegramVoice(allocator, self.bot_token, file_id)) |transcribed| {
+                    if (voice.transcribeTelegramVoice(allocator, self.bot_token, file_id, self.groq_api_key)) |transcribed| {
                         // Prepend [Voice]: prefix
                         var result: std.ArrayListUnmanaged(u8) = .empty;
                         result.appendSlice(allocator, "[Voice]: ") catch break :blk_content null;
@@ -1024,7 +1026,7 @@ pub const TypingIndicator = struct {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "telegram api url" {
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{}, null);
     var buf: [256]u8 = undefined;
     const url = try ch.apiUrl(&buf, "getUpdates");
     try std.testing.expectEqualStrings("https://api.telegram.org/bot123:ABC/getUpdates", url);
@@ -1035,35 +1037,35 @@ test "telegram api url" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "telegram api url sendDocument" {
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{}, null);
     var buf: [256]u8 = undefined;
     const url = try ch.apiUrl(&buf, "sendDocument");
     try std.testing.expectEqualStrings("https://api.telegram.org/bot123:ABC/sendDocument", url);
 }
 
 test "telegram api url sendPhoto" {
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{}, null);
     var buf: [256]u8 = undefined;
     const url = try ch.apiUrl(&buf, "sendPhoto");
     try std.testing.expectEqualStrings("https://api.telegram.org/bot123:ABC/sendPhoto", url);
 }
 
 test "telegram api url sendVideo" {
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{}, null);
     var buf: [256]u8 = undefined;
     const url = try ch.apiUrl(&buf, "sendVideo");
     try std.testing.expectEqualStrings("https://api.telegram.org/bot123:ABC/sendVideo", url);
 }
 
 test "telegram api url sendAudio" {
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{}, null);
     var buf: [256]u8 = undefined;
     const url = try ch.apiUrl(&buf, "sendAudio");
     try std.testing.expectEqualStrings("https://api.telegram.org/bot123:ABC/sendAudio", url);
 }
 
 test "telegram api url sendVoice" {
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC", &.{}, null);
     var buf: [256]u8 = undefined;
     const url = try ch.apiUrl(&buf, "sendVoice");
     try std.testing.expectEqualStrings("https://api.telegram.org/bot123:ABC/sendVoice", url);
@@ -1081,10 +1083,16 @@ test "telegram build send body" {
 
 test "telegram init stores fields" {
     const users = [_][]const u8{ "alice", "bob" };
-    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC-DEF", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "123:ABC-DEF", &users, null);
     try std.testing.expectEqualStrings("123:ABC-DEF", ch.bot_token);
     try std.testing.expectEqual(@as(i64, 0), ch.last_update_id);
     try std.testing.expectEqual(@as(usize, 2), ch.allowed_users.len);
+    try std.testing.expect(ch.groq_api_key == null);
+}
+
+test "telegram init stores groq_api_key" {
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &.{}, "gsk_test123");
+    try std.testing.expectEqualStrings("gsk_test123", ch.groq_api_key.?);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1310,7 +1318,7 @@ test "telegram smartSplitMessage preserves total content" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "telegram sendTypingIndicator does not crash with invalid token" {
-    var ch = TelegramChannel.init(std.testing.allocator, "invalid:token", &.{});
+    var ch = TelegramChannel.init(std.testing.allocator, "invalid:token", &.{}, null);
     ch.sendTypingIndicator("12345");
 }
 
@@ -1319,14 +1327,14 @@ test "telegram sendTypingIndicator does not crash with invalid token" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "telegram allowed_users empty denies all" {
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &.{});
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &.{}, null);
     try std.testing.expect(!ch.isUserAllowed("anyone"));
     try std.testing.expect(!ch.isUserAllowed("admin"));
 }
 
 test "telegram allowed_users non-empty filters correctly" {
     const users = [_][]const u8{ "alice", "bob" };
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     try std.testing.expect(ch.isUserAllowed("alice"));
     try std.testing.expect(ch.isUserAllowed("bob"));
     try std.testing.expect(!ch.isUserAllowed("eve"));
@@ -1335,14 +1343,14 @@ test "telegram allowed_users non-empty filters correctly" {
 
 test "telegram allowed_users wildcard allows all" {
     const users = [_][]const u8{"*"};
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     try std.testing.expect(ch.isUserAllowed("anyone"));
     try std.testing.expect(ch.isUserAllowed("admin"));
 }
 
 test "telegram allowed_users case insensitive" {
     const users = [_][]const u8{"Alice"};
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     try std.testing.expect(ch.isUserAllowed("Alice"));
     try std.testing.expect(ch.isUserAllowed("alice"));
     try std.testing.expect(ch.isUserAllowed("ALICE"));
@@ -1350,7 +1358,7 @@ test "telegram allowed_users case insensitive" {
 
 test "telegram allowed_users strips @ prefix" {
     const users = [_][]const u8{"@alice"};
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     try std.testing.expect(ch.isUserAllowed("alice"));
     try std.testing.expect(!ch.isUserAllowed("@alice"));
     try std.testing.expect(!ch.isUserAllowed("bob"));
@@ -1358,28 +1366,28 @@ test "telegram allowed_users strips @ prefix" {
 
 test "telegram isAnyIdentityAllowed matches username" {
     const users = [_][]const u8{"alice"};
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     const ids = [_][]const u8{ "alice", "123456" };
     try std.testing.expect(ch.isAnyIdentityAllowed(&ids));
 }
 
 test "telegram isAnyIdentityAllowed matches numeric id" {
     const users = [_][]const u8{"123456"};
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     const ids = [_][]const u8{ "unknown", "123456" };
     try std.testing.expect(ch.isAnyIdentityAllowed(&ids));
 }
 
 test "telegram isAnyIdentityAllowed denies when none match" {
     const users = [_][]const u8{ "alice", "987654" };
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     const ids = [_][]const u8{ "unknown", "123456" };
     try std.testing.expect(!ch.isAnyIdentityAllowed(&ids));
 }
 
 test "telegram isAnyIdentityAllowed wildcard allows all" {
     const users = [_][]const u8{ "alice", "*" };
-    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users);
+    const ch = TelegramChannel.init(std.testing.allocator, "tok", &users, null);
     const ids = [_][]const u8{ "bob", "999" };
     try std.testing.expect(ch.isAnyIdentityAllowed(&ids));
 }
@@ -1485,14 +1493,14 @@ test "telegram markdownToTelegramHtml empty" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "telegram TypingIndicator init" {
-    var ch = TelegramChannel.init(std.testing.allocator, "tok", &.{});
+    var ch = TelegramChannel.init(std.testing.allocator, "tok", &.{}, null);
     var ti = TypingIndicator.init(&ch);
     try std.testing.expect(!ti.running.load(.acquire));
     try std.testing.expect(ti.thread == null);
 }
 
 test "telegram TypingIndicator start and stop" {
-    var ch = TelegramChannel.init(std.testing.allocator, "invalid:token", &.{});
+    var ch = TelegramChannel.init(std.testing.allocator, "invalid:token", &.{}, null);
     var ti = TypingIndicator.init(&ch);
 
     ti.start("12345");
@@ -1507,7 +1515,7 @@ test "telegram TypingIndicator start and stop" {
 }
 
 test "telegram TypingIndicator double start is safe" {
-    var ch = TelegramChannel.init(std.testing.allocator, "invalid:token", &.{});
+    var ch = TelegramChannel.init(std.testing.allocator, "invalid:token", &.{}, null);
     var ti = TypingIndicator.init(&ch);
 
     ti.start("123");
@@ -1517,7 +1525,7 @@ test "telegram TypingIndicator double start is safe" {
 }
 
 test "telegram TypingIndicator stop without start is safe" {
-    var ch = TelegramChannel.init(std.testing.allocator, "tok", &.{});
+    var ch = TelegramChannel.init(std.testing.allocator, "tok", &.{}, null);
     var ti = TypingIndicator.init(&ch);
     ti.stop(); // no-op
 }
