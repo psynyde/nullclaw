@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const net_security = @import("../root.zig").net_security;
 
 /// HTTP request tool for API interactions.
@@ -24,9 +25,9 @@ pub const HttpRequestTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *HttpRequestTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -44,11 +45,11 @@ pub const HttpRequestTool = struct {
         ;
     }
 
-    fn execute(self: *HttpRequestTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const url = parseStringField(args_json, "url") orelse
+    fn execute(self: *HttpRequestTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const url = root.getString(args, "url") orelse
             return ToolResult.fail("Missing 'url' parameter");
 
-        const method_str = parseStringField(args_json, "method") orelse "GET";
+        const method_str = root.getString(args, "method") orelse "GET";
 
         // Validate URL scheme
         if (!std.mem.startsWith(u8, url, "http://") and !std.mem.startsWith(u8, url, "https://")) {
@@ -80,23 +81,45 @@ pub const HttpRequestTool = struct {
         const uri = std.Uri.parse(url) catch
             return ToolResult.fail("Invalid URL format");
 
-        // Parse custom headers
-        const headers_json = parseStringField(args_json, "headers");
-        const custom_headers = parseHeaders(allocator, headers_json) catch
-            return ToolResult.fail("Invalid headers format");
+        // Parse custom headers from ObjectMap
+        const headers_val = root.getValue(args, "headers");
+        var header_list: std.ArrayList([2][]const u8) = .{};
+        errdefer {
+            for (header_list.items) |h| {
+                allocator.free(h[0]);
+                allocator.free(h[1]);
+            }
+            header_list.deinit(allocator);
+        }
+        if (headers_val) |hv| {
+            if (hv == .object) {
+                var it = hv.object.iterator();
+                while (it.next()) |entry| {
+                    const val_str = switch (entry.value_ptr.*) {
+                        .string => |s| s,
+                        else => continue,
+                    };
+                    try header_list.append(allocator, .{
+                        try allocator.dupe(u8, entry.key_ptr.*),
+                        try allocator.dupe(u8, val_str),
+                    });
+                }
+            }
+        }
+        const custom_headers = header_list.items;
         defer {
             for (custom_headers) |h| {
                 allocator.free(h[0]);
                 allocator.free(h[1]);
             }
-            allocator.free(custom_headers);
+            header_list.deinit(allocator);
         }
 
         // Execute request using std.http.Client (Zig 0.15 API)
         var client: std.http.Client = .{ .allocator = allocator };
         defer client.deinit();
 
-        const body = parseStringField(args_json, "body");
+        const body: ?[]const u8 = root.getString(args, "body");
 
         // Build extra headers
         var extra_headers_buf: [32]std.http.Header = undefined;
@@ -371,7 +394,9 @@ test "isSensitiveHeader checks" {
 test "execute rejects missing url parameter" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "url") != null);
 }
@@ -379,7 +404,9 @@ test "execute rejects missing url parameter" {
 test "execute rejects non-http scheme" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"ftp://example.com\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"ftp://example.com\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "http") != null);
 }
@@ -387,7 +414,9 @@ test "execute rejects non-http scheme" {
 test "execute rejects localhost SSRF" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"http://127.0.0.1:8080/admin\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"http://127.0.0.1:8080/admin\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "local") != null);
 }
@@ -395,21 +424,27 @@ test "execute rejects localhost SSRF" {
 test "execute rejects private IP SSRF" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"http://192.168.1.1/admin\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"http://192.168.1.1/admin\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
 test "execute rejects 10.x private range" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"http://10.0.0.1/secret\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"http://10.0.0.1/secret\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
 test "execute rejects unsupported method" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"https://example.com\", \"method\": \"INVALID\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"https://example.com\", \"method\": \"INVALID\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unsupported") != null);
@@ -418,7 +453,9 @@ test "execute rejects unsupported method" {
 test "execute rejects invalid URL format" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"http://\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"http://\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
@@ -426,7 +463,9 @@ test "execute rejects non-allowlisted domain" {
     const domains = [_][]const u8{"example.com"};
     var ht = HttpRequestTool{ .allowed_domains = &domains };
     const t = ht.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"https://evil.com/path\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"https://evil.com/path\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "allowed_domains") != null);
 }

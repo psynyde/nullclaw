@@ -1,8 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
-const parseIntField = @import("shell.zig").parseIntField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const mem_root = @import("../memory/root.zig");
 const Memory = mem_root.Memory;
 const MemoryEntry = mem_root.MemoryEntry;
@@ -25,9 +25,9 @@ pub const MemoryRecallTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *MemoryRecallTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -44,11 +44,11 @@ pub const MemoryRecallTool = struct {
         ;
     }
 
-    fn execute(self: *MemoryRecallTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const query = parseStringField(args_json, "query") orelse
+    fn execute(self: *MemoryRecallTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const query = root.getString(args, "query") orelse
             return ToolResult.fail("Missing 'query' parameter");
 
-        const limit_raw = parseIntField(args_json, "limit") orelse 5;
+        const limit_raw = root.getInt(args, "limit") orelse 5;
         const limit: usize = if (limit_raw > 0) @intCast(limit_raw) else 5;
 
         const m = self.memory orelse {
@@ -118,7 +118,9 @@ test "memory_recall schema has query" {
 test "memory_recall executes without backend" {
     var mt = MemoryRecallTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"query\": \"Zig\"}");
+    const parsed = try root.parseTestArgs("{\"query\": \"Zig\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "not configured") != null);
@@ -127,7 +129,9 @@ test "memory_recall executes without backend" {
 test "memory_recall missing query" {
     var mt = MemoryRecallTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
@@ -138,7 +142,9 @@ test "memory_recall with real backend empty result" {
 
     var mt = MemoryRecallTool{ .memory = backend.memory() };
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"query\": \"Zig\"}");
+    const parsed = try root.parseTestArgs("{\"query\": \"Zig\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "No memories found") != null);
@@ -151,7 +157,9 @@ test "memory_recall with custom limit" {
 
     var mt = MemoryRecallTool{ .memory = backend.memory() };
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"query\": \"test\", \"limit\": 10}");
+    const parsed = try root.parseTestArgs("{\"query\": \"test\", \"limit\": 10}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
 }

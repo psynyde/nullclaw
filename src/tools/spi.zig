@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
-const parseIntField = @import("shell.zig").parseIntField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// SPI hardware tool for Linux SPI device interaction.
 /// Supports listing SPI devices, full-duplex transfer, and read-only mode.
@@ -25,9 +25,9 @@ pub const SpiTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *SpiTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -46,17 +46,17 @@ pub const SpiTool = struct {
         ;
     }
 
-    fn execute(self: *SpiTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn execute(self: *SpiTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         _ = self;
-        const action = parseStringField(args_json, "action") orelse
+        const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
         if (std.mem.eql(u8, action, "list")) {
             return executeList(allocator);
         } else if (std.mem.eql(u8, action, "transfer")) {
-            return executeTransfer(allocator, args_json, false);
+            return executeTransfer(allocator, args, false);
         } else if (std.mem.eql(u8, action, "read")) {
-            return executeTransfer(allocator, args_json, true);
+            return executeTransfer(allocator, args, true);
         } else {
             return ToolResult.fail("Unknown action. Use 'list', 'transfer', or 'read'");
         }
@@ -96,16 +96,16 @@ pub const SpiTool = struct {
         return ToolResult{ .success = true, .output = try devices.toOwnedSlice(allocator) };
     }
 
-    fn executeTransfer(allocator: std.mem.Allocator, args_json: []const u8, read_only: bool) !ToolResult {
+    fn executeTransfer(allocator: std.mem.Allocator, args: JsonObjectMap, read_only: bool) !ToolResult {
         if (comptime builtin.os.tag != .linux) {
             const output = try allocator.dupe(u8, "{\"error\":\"SPI not supported on this platform\"}");
             return ToolResult{ .success = false, .output = output, .error_msg = try allocator.dupe(u8, "SPI not supported on this platform") };
         }
 
-        const device = parseStringField(args_json, "device") orelse "/dev/spidev0.0";
-        const speed_hz: u32 = if (parseIntField(args_json, "speed_hz")) |v| @intCast(@as(u32, @truncate(@as(u64, @bitCast(v))))) else 1_000_000;
-        const mode: u8 = if (parseIntField(args_json, "mode")) |v| @intCast(@as(u8, @truncate(@as(u64, @bitCast(v))))) else 0;
-        const bits_per_word: u8 = if (parseIntField(args_json, "bits_per_word")) |v| @intCast(@as(u8, @truncate(@as(u64, @bitCast(v))))) else 8;
+        const device = root.getString(args, "device") orelse "/dev/spidev0.0";
+        const speed_hz: u32 = if (root.getInt(args, "speed_hz")) |v| @intCast(@as(u32, @truncate(@as(u64, @bitCast(v))))) else 1_000_000;
+        const mode: u8 = if (root.getInt(args, "mode")) |v| @intCast(@as(u8, @truncate(@as(u64, @bitCast(v))))) else 0;
+        const bits_per_word: u8 = if (root.getInt(args, "bits_per_word")) |v| @intCast(@as(u8, @truncate(@as(u64, @bitCast(v))))) else 8;
 
         if (mode > 3) {
             return ToolResult.fail("SPI mode must be 0-3");
@@ -116,7 +116,7 @@ pub const SpiTool = struct {
         var tx_len: usize = 0;
 
         if (!read_only) {
-            const data_str = parseStringField(args_json, "data") orelse
+            const data_str = root.getString(args, "data") orelse
                 return ToolResult.fail("Missing 'data' parameter for transfer action");
             tx_len = parseHexBytes(data_str, &tx_buf) catch
                 return ToolResult.fail("Invalid hex data format. Use space-separated hex bytes like 'FF 0A 3B'");
@@ -125,10 +125,10 @@ pub const SpiTool = struct {
             }
         } else {
             // For read-only, use data length or default 1 byte
-            if (parseIntField(args_json, "length")) |len| {
+            if (root.getInt(args, "length")) |len| {
                 tx_len = @intCast(@as(usize, @truncate(@as(u64, @bitCast(len)))));
                 if (tx_len > tx_buf.len) tx_len = tx_buf.len;
-            } else if (parseStringField(args_json, "data")) |data_str| {
+            } else if (root.getString(args, "data")) |data_str| {
                 tx_len = parseHexBytes(data_str, &tx_buf) catch 1;
                 // Zero out for read-only
                 @memset(tx_buf[0..tx_len], 0);
@@ -300,7 +300,9 @@ test "spi tool schema has action" {
 test "spi list action on non-linux" {
     var st = SpiTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"list\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"list\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer std.testing.allocator.free(result.output);
     if (comptime builtin.os.tag != .linux) {
         try std.testing.expect(result.success);
@@ -312,7 +314,9 @@ test "spi transfer on non-linux returns error" {
     if (comptime builtin.os.tag == .linux) return;
     var st = SpiTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"transfer\", \"data\": \"FF 0A\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"transfer\", \"data\": \"FF 0A\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
@@ -323,7 +327,9 @@ test "spi read on non-linux returns error" {
     if (comptime builtin.os.tag == .linux) return;
     var st = SpiTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"read\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"read\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
@@ -333,7 +339,9 @@ test "spi read on non-linux returns error" {
 test "spi missing action" {
     var st = SpiTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(result.error_msg != null);
 }
@@ -341,7 +349,9 @@ test "spi missing action" {
 test "spi unknown action" {
     var st = SpiTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"unknown\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"unknown\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unknown action") != null);
 }

@@ -1,9 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
-const parseBoolField = @import("shell.zig").parseBoolField;
-const parseIntField = @import("shell.zig").parseIntField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const isResolvedPathAllowed = @import("file_edit.zig").isResolvedPathAllowed;
 
 /// Git operations tool for structured repository management.
@@ -25,9 +24,9 @@ pub const GitTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *GitTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -120,21 +119,21 @@ pub const GitTool = struct {
         return false;
     }
 
-    fn execute(self: *GitTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const operation = parseStringField(args_json, "operation") orelse
+    fn execute(self: *GitTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const operation = root.getString(args, "operation") orelse
             return ToolResult.fail("Missing 'operation' parameter");
 
         // Sanitize all string arguments before execution
         const fields_to_check = [_][]const u8{ "message", "paths", "branch", "files", "action" };
         for (fields_to_check) |field| {
-            if (parseStringField(args_json, field)) |val| {
+            if (root.getString(args, field)) |val| {
                 if (!sanitizeGitArgs(val))
                     return ToolResult.fail("Unsafe git arguments detected");
             }
         }
 
         // Resolve optional cwd override
-        const effective_cwd = if (parseStringField(args_json, "cwd")) |cwd| blk: {
+        const effective_cwd = if (root.getString(args, "cwd")) |cwd| blk: {
             if (cwd.len == 0 or cwd[0] != '/')
                 return ToolResult.fail("cwd must be an absolute path");
             if (self.allowed_paths.len == 0)
@@ -152,13 +151,13 @@ pub const GitTool = struct {
         } else self.workspace_dir;
 
         if (std.mem.eql(u8, operation, "status")) return self.runGitOp(allocator, effective_cwd, &.{ "status", "--porcelain=2", "--branch" });
-        if (std.mem.eql(u8, operation, "diff")) return self.gitDiff(allocator, effective_cwd, args_json);
-        if (std.mem.eql(u8, operation, "log")) return self.gitLog(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "diff")) return self.gitDiff(allocator, effective_cwd, args);
+        if (std.mem.eql(u8, operation, "log")) return self.gitLog(allocator, effective_cwd, args);
         if (std.mem.eql(u8, operation, "branch")) return self.runGitOp(allocator, effective_cwd, &.{ "branch", "--format=%(refname:short)|%(HEAD)" });
-        if (std.mem.eql(u8, operation, "commit")) return self.gitCommit(allocator, effective_cwd, args_json);
-        if (std.mem.eql(u8, operation, "add")) return self.gitAdd(allocator, effective_cwd, args_json);
-        if (std.mem.eql(u8, operation, "checkout")) return self.gitCheckout(allocator, effective_cwd, args_json);
-        if (std.mem.eql(u8, operation, "stash")) return self.gitStash(allocator, effective_cwd, args_json);
+        if (std.mem.eql(u8, operation, "commit")) return self.gitCommit(allocator, effective_cwd, args);
+        if (std.mem.eql(u8, operation, "add")) return self.gitAdd(allocator, effective_cwd, args);
+        if (std.mem.eql(u8, operation, "checkout")) return self.gitCheckout(allocator, effective_cwd, args);
+        if (std.mem.eql(u8, operation, "stash")) return self.gitStash(allocator, effective_cwd, args);
 
         const msg = try std.fmt.allocPrint(allocator, "Unknown operation: {s}", .{operation});
         return ToolResult{ .success = false, .output = "", .error_msg = msg };
@@ -201,9 +200,9 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = result.stdout };
     }
 
-    fn gitDiff(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
-        const cached = parseBoolField(args_json, "cached") orelse false;
-        const files = parseStringField(args_json, "files") orelse ".";
+    fn gitDiff(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: JsonObjectMap) !ToolResult {
+        const cached = root.getBool(args, "cached") orelse false;
+        const files = root.getString(args, "files") orelse ".";
 
         var argv_buf: [8][]const u8 = undefined;
         var argc: usize = 0;
@@ -230,8 +229,8 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = result.stdout };
     }
 
-    fn gitLog(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
-        const limit_raw = parseIntField(args_json, "limit") orelse 10;
+    fn gitLog(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: JsonObjectMap) !ToolResult {
+        const limit_raw = root.getInt(args, "limit") orelse 10;
         const limit: usize = @intCast(@min(@max(limit_raw, 1), 1000));
 
         var limit_buf: [16]u8 = undefined;
@@ -252,8 +251,8 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = result.stdout };
     }
 
-    fn gitCommit(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
-        const raw_message = parseStringField(args_json, "message") orelse
+    fn gitCommit(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: JsonObjectMap) !ToolResult {
+        const raw_message = root.getString(args, "message") orelse
             return ToolResult.fail("Missing 'message' parameter for commit");
 
         if (raw_message.len == 0) return ToolResult.fail("Commit message cannot be empty");
@@ -272,8 +271,8 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = out };
     }
 
-    fn gitAdd(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
-        const paths = parseStringField(args_json, "paths") orelse
+    fn gitAdd(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: JsonObjectMap) !ToolResult {
+        const paths = root.getString(args, "paths") orelse
             return ToolResult.fail("Missing 'paths' parameter for add");
 
         const result = try self.runGit(allocator, git_cwd, &.{ "add", "--", paths });
@@ -287,8 +286,8 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = out };
     }
 
-    fn gitCheckout(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
-        const branch = parseStringField(args_json, "branch") orelse
+    fn gitCheckout(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: JsonObjectMap) !ToolResult {
+        const branch = root.getString(args, "branch") orelse
             return ToolResult.fail("Missing 'branch' parameter for checkout");
 
         // Block dangerous branch names
@@ -311,8 +310,8 @@ pub const GitTool = struct {
         return ToolResult{ .success = true, .output = out };
     }
 
-    fn gitStash(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args_json: []const u8) !ToolResult {
-        const action = parseStringField(args_json, "action") orelse "push";
+    fn gitStash(self: *GitTool, allocator: std.mem.Allocator, git_cwd: []const u8, args: JsonObjectMap) !ToolResult {
+        const action = root.getString(args, "action") orelse "push";
 
         if (std.mem.eql(u8, action, "push") or std.mem.eql(u8, action, "save")) {
             const result = try self.runGit(allocator, git_cwd, &.{ "stash", "push", "-m", "auto-stash" });
@@ -370,7 +369,9 @@ test "git tool schema has operation" {
 test "git rejects missing operation" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(result.error_msg != null);
 }
@@ -378,7 +379,9 @@ test "git rejects missing operation" {
 test "git rejects unknown operation" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"push\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"push\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unknown operation") != null);
@@ -387,7 +390,9 @@ test "git rejects unknown operation" {
 test "git checkout blocks injection" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"checkout\", \"branch\": \"main; rm -rf /\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"checkout\", \"branch\": \"main; rm -rf /\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
     // Caught by sanitizeGitArgs in execute() before reaching gitCheckout
@@ -397,7 +402,9 @@ test "git checkout blocks injection" {
 test "git commit missing message" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"commit\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"commit\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
 }
@@ -405,7 +412,9 @@ test "git commit missing message" {
 test "git commit empty message" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"commit\", \"message\": \"\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"commit\", \"message\": \"\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
 }
@@ -413,7 +422,9 @@ test "git commit empty message" {
 test "git add missing paths" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"add\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"add\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
 }
@@ -540,7 +551,9 @@ test "requiresWriteAccess returns false for log" {
 test "git execute blocks unsafe args in message" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"commit\", \"message\": \"$(evil)\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"commit\", \"message\": \"$(evil)\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unsafe") != null);
 }
@@ -548,7 +561,9 @@ test "git execute blocks unsafe args in message" {
 test "git execute blocks unsafe args in paths" {
     var gt = GitTool{ .workspace_dir = "/tmp" };
     const t = gt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"operation\": \"add\", \"paths\": \"file.txt; rm -rf /\"}");
+    const parsed = try root.parseTestArgs("{\"operation\": \"add\", \"paths\": \"file.txt; rm -rf /\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unsafe") != null);
 }

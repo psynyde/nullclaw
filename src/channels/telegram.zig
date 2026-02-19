@@ -225,6 +225,7 @@ pub const TelegramChannel = struct {
     bot_token: []const u8,
     allowed_users: []const []const u8,
     last_update_id: i64,
+    proxy: ?[]const u8,
 
     pub const MAX_MESSAGE_LEN: usize = 4096;
 
@@ -234,6 +235,7 @@ pub const TelegramChannel = struct {
             .bot_token = bot_token,
             .allowed_users = allowed_users,
             .last_update_id = 0,
+            .proxy = null,
         };
     }
 
@@ -280,9 +282,12 @@ pub const TelegramChannel = struct {
         return false;
     }
 
-    pub fn healthCheck(_: *TelegramChannel) bool {
-        // Would normally call getMe; just return true for now
-        return true;
+    pub fn healthCheck(self: *TelegramChannel) bool {
+        var url_buf: [512]u8 = undefined;
+        const url = self.apiUrl(&url_buf, "getMe") catch return false;
+        const resp = root.http_util.curlPostWithProxy(self.allocator, url, "{}", &.{}, self.proxy, null) catch return false;
+        defer self.allocator.free(resp);
+        return std.mem.indexOf(u8, resp, "\"ok\":true") != null;
     }
 
     /// Register bot commands with Telegram so they appear in the "/" menu.
@@ -300,7 +305,7 @@ pub const TelegramChannel = struct {
             \\]}
         ;
 
-        const resp = root.http_util.curlPost(self.allocator, url, body, &.{}) catch |err| {
+        const resp = root.http_util.curlPostWithProxy(self.allocator, url, body, &.{}, self.proxy, null) catch |err| {
             log.warn("setMyCommands failed: {}", .{err});
             return;
         };
@@ -314,7 +319,7 @@ pub const TelegramChannel = struct {
         const url = self.apiUrl(&url_buf, "getUpdates") catch return;
 
         const body = "{\"offset\":-1,\"timeout\":0}";
-        const resp_body = root.http_util.curlPost(self.allocator, url, body, &.{}) catch return;
+        const resp_body = root.http_util.curlPostWithProxy(self.allocator, url, body, &.{}, self.proxy, null) catch return;
         defer self.allocator.free(resp_body);
 
         // Parse to extract the latest update_id and advance past it
@@ -345,7 +350,7 @@ pub const TelegramChannel = struct {
         body_list.appendSlice(self.allocator, chat_id) catch return;
         body_list.appendSlice(self.allocator, ",\"action\":\"typing\"}") catch return;
 
-        const resp = root.http_util.curlPost(self.allocator, url, body_list.items, &.{}) catch return;
+        const resp = root.http_util.curlPostWithProxy(self.allocator, url, body_list.items, &.{}, self.proxy, null) catch return;
         self.allocator.free(resp);
     }
 
@@ -382,7 +387,7 @@ pub const TelegramChannel = struct {
         }
         try html_body.appendSlice(self.allocator, "}");
 
-        const resp = root.http_util.curlPost(self.allocator, url, html_body.items, &.{}) catch {
+        const resp = root.http_util.curlPostWithProxy(self.allocator, url, html_body.items, &.{}, self.proxy, null) catch {
             // Network error — fall through to plain send
             try self.sendChunkPlain(chat_id, text, reply_to);
             return;
@@ -417,7 +422,7 @@ pub const TelegramChannel = struct {
         }
         try body_list.appendSlice(self.allocator, "}");
 
-        const resp = try root.http_util.curlPost(self.allocator, url, body_list.items, &.{});
+        const resp = try root.http_util.curlPostWithProxy(self.allocator, url, body_list.items, &.{}, self.proxy, null);
         self.allocator.free(resp);
     }
 
@@ -581,7 +586,7 @@ pub const TelegramChannel = struct {
         try root.json_util.appendJsonString(&body_list, self.allocator, text);
         try body_list.appendSlice(self.allocator, "}");
 
-        const resp = try root.http_util.curlPost(self.allocator, url, body_list.items, &.{});
+        const resp = try root.http_util.curlPostWithProxy(self.allocator, url, body_list.items, &.{}, self.proxy, null);
         self.allocator.free(resp);
     }
 
@@ -599,7 +604,7 @@ pub const TelegramChannel = struct {
         try fbs.writer().print("{{\"offset\":{d},\"timeout\":30,\"allowed_updates\":[\"message\"]}}", .{self.last_update_id});
         const body = fbs.getWritten();
 
-        const resp_body = try root.http_util.curlPost(allocator, url, body, &.{});
+        const resp_body = try root.http_util.curlPostWithProxy(allocator, url, body, &.{}, self.proxy, null);
         defer allocator.free(resp_body);
 
         // Parse JSON response to extract messages

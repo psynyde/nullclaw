@@ -307,6 +307,9 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
             if (ag.object.get("compaction_max_source_chars")) |v| {
                 if (v == .integer) self.agent.compaction_max_source_chars = @intCast(v.integer);
             }
+            if (ag.object.get("message_timeout_secs")) |v| {
+                if (v == .integer) self.agent.message_timeout_secs = @intCast(v.integer);
+            }
         }
     }
 
@@ -673,6 +676,9 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                         }
                         if (tg.object.get("reply_in_private")) |v| {
                             if (v == .bool) tg_cfg.reply_in_private = v.bool;
+                        }
+                        if (tg.object.get("proxy")) |v| {
+                            if (v == .string) tg_cfg.proxy = try self.allocator.dupe(u8, v.string);
                         }
                     }
                 }

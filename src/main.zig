@@ -700,6 +700,7 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
     }
 
     var tg = yc.channels.telegram.TelegramChannel.init(allocator, telegram_config.bot_token, allowed);
+    tg.proxy = telegram_config.proxy;
 
     // Initialize MCP tools from config
     const mcp_tools: ?[]const yc.tools.Tool = if (config.mcp_servers.len > 0)
@@ -823,7 +824,13 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
             const reply = session_mgr.processMessage(session_key, msg.content) catch |err| {
                 typing.stop();
                 std.debug.print("  Agent error: {}\n", .{err});
-                tg.sendMessageWithReply(msg.sender, "Sorry, I encountered an error.", reply_to_id) catch |send_err| log.err("failed to send error reply: {}", .{send_err});
+                const err_msg = switch (err) {
+                    error.CurlFailed, error.CurlReadError, error.CurlWaitError => "Ошибка сети. Попробуй ещё раз.",
+                    error.MaxToolIterationsExceeded => "Превышен лимит итераций инструментов.",
+                    error.OutOfMemory => "Недостаточно памяти для обработки.",
+                    else => "Произошла ошибка. Попробуй ещё раз или /new для новой сессии.",
+                };
+                tg.sendMessageWithReply(msg.sender, err_msg, reply_to_id) catch |send_err| log.err("failed to send error reply: {}", .{send_err});
                 continue;
             };
             defer allocator.free(reply);

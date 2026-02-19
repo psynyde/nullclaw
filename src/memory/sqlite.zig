@@ -355,7 +355,7 @@ pub const SqliteMemory = struct {
         self_.deinit();
     }
 
-    const vtable = Memory.VTable{
+    pub const vtable = Memory.VTable{
         .name = &implName,
         .store = &implStore,
         .recall = &implRecall,
@@ -387,6 +387,61 @@ pub const SqliteMemory = struct {
         _ = c.sqlite3_bind_text(stmt, 2, role_str.ptr, @intCast(role_str.len), SQLITE_STATIC);
         _ = c.sqlite3_bind_text(stmt, 3, content.ptr, @intCast(content.len), SQLITE_STATIC);
 
+        if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return error.StepFailed;
+    }
+
+    /// A single persisted message entry (role + content).
+    pub const MessageEntry = struct {
+        role: []const u8,
+        content: []const u8,
+    };
+
+    /// Load all messages for a session, ordered by creation time.
+    /// Caller owns the returned slice and all strings within it.
+    pub fn loadMessages(self: *Self, allocator: std.mem.Allocator, session_id: []const u8) ![]MessageEntry {
+        const sql = "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC";
+        var stmt: ?*c.sqlite3_stmt = null;
+        const rc = c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null);
+        if (rc != c.SQLITE_OK) return error.PrepareFailed;
+        defer _ = c.sqlite3_finalize(stmt);
+
+        _ = c.sqlite3_bind_text(stmt, 1, session_id.ptr, @intCast(session_id.len), SQLITE_STATIC);
+
+        var list: std.ArrayListUnmanaged(MessageEntry) = .empty;
+        errdefer {
+            for (list.items) |entry| {
+                allocator.free(entry.role);
+                allocator.free(entry.content);
+            }
+            list.deinit(allocator);
+        }
+
+        while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+            const role_ptr = c.sqlite3_column_text(stmt, 0);
+            const role_len: usize = @intCast(c.sqlite3_column_bytes(stmt, 0));
+            const content_ptr = c.sqlite3_column_text(stmt, 1);
+            const content_len: usize = @intCast(c.sqlite3_column_bytes(stmt, 1));
+
+            if (role_ptr == null or content_ptr == null) continue;
+
+            try list.append(allocator, .{
+                .role = try allocator.dupe(u8, role_ptr[0..role_len]),
+                .content = try allocator.dupe(u8, content_ptr[0..content_len]),
+            });
+        }
+
+        return list.toOwnedSlice(allocator);
+    }
+
+    /// Delete all messages for a session.
+    pub fn clearMessages(self: *Self, session_id: []const u8) !void {
+        const sql = "DELETE FROM messages WHERE session_id = ?";
+        var stmt: ?*c.sqlite3_stmt = null;
+        const rc = c.sqlite3_prepare_v2(self.db, sql, -1, &stmt, null);
+        if (rc != c.SQLITE_OK) return error.PrepareFailed;
+        defer _ = c.sqlite3_finalize(stmt);
+
+        _ = c.sqlite3_bind_text(stmt, 1, session_id.ptr, @intCast(session_id.len), SQLITE_STATIC);
         if (c.sqlite3_step(stmt) != c.SQLITE_DONE) return error.StepFailed;
     }
 

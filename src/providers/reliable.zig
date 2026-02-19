@@ -33,6 +33,22 @@ pub fn isNonRetryable(err_msg: []const u8) bool {
     return false;
 }
 
+/// Check if an error message indicates context window exhaustion.
+pub fn isContextExhausted(err_msg: []const u8) bool {
+    // Common patterns from various LLM providers
+    const has_context = std.mem.indexOf(u8, err_msg, "context") != null;
+    const has_token = std.mem.indexOf(u8, err_msg, "token") != null;
+    if (has_context and (std.mem.indexOf(u8, err_msg, "length") != null or
+        std.mem.indexOf(u8, err_msg, "maximum") != null))
+        return true;
+    if (has_token and (std.mem.indexOf(u8, err_msg, "limit") != null or
+        std.mem.indexOf(u8, err_msg, "too many") != null or
+        std.mem.indexOf(u8, err_msg, "maximum") != null))
+        return true;
+    if (std.mem.indexOf(u8, err_msg, "413") != null) return true;
+    return false;
+}
+
 /// Check if an error message indicates a rate-limit (429) error.
 pub fn isRateLimited(err_msg: []const u8) bool {
     return std.mem.indexOf(u8, err_msg, "429") != null and
@@ -449,6 +465,18 @@ pub const ReliableProvider = struct {
 // ════════════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════════════
+
+test "isContextExhausted detects common patterns" {
+    try std.testing.expect(isContextExhausted("context length exceeded"));
+    try std.testing.expect(isContextExhausted("maximum context length"));
+    try std.testing.expect(isContextExhausted("token limit exceeded"));
+    try std.testing.expect(isContextExhausted("too many tokens in context"));
+    try std.testing.expect(isContextExhausted("maximum token limit"));
+    try std.testing.expect(isContextExhausted("HTTP 413 Payload Too Large"));
+    try std.testing.expect(!isContextExhausted("500 Internal Server Error"));
+    try std.testing.expect(!isContextExhausted("connection reset"));
+    try std.testing.expect(!isContextExhausted(""));
+}
 
 test "isNonRetryable detects common patterns" {
     try std.testing.expect(isNonRetryable("400 Bad Request"));

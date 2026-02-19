@@ -1,8 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// Maximum response body size for the "read" action (8 KB).
 const MAX_READ_BYTES: usize = 8192;
@@ -27,9 +28,9 @@ pub const BrowserTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *BrowserTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -46,14 +47,14 @@ pub const BrowserTool = struct {
         ;
     }
 
-    fn execute(_: *BrowserTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const action = parseStringField(args_json, "action") orelse
+    fn execute(_: *BrowserTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
         if (std.mem.eql(u8, action, "open")) {
-            return executeOpen(allocator, args_json);
+            return executeOpen(allocator, args);
         } else if (std.mem.eql(u8, action, "read")) {
-            return executeRead(allocator, args_json);
+            return executeRead(allocator, args);
         } else if (std.mem.eql(u8, action, "screenshot")) {
             return ToolResult.fail("Use the screenshot tool instead");
         } else if (std.mem.eql(u8, action, "click") or
@@ -73,8 +74,8 @@ pub const BrowserTool = struct {
     }
 
     /// "open" — launch URL in the platform's default browser.
-    fn executeOpen(allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const url = parseStringField(args_json, "url") orelse
+    fn executeOpen(allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const url = root.getString(args, "url") orelse
             return ToolResult.fail("Missing 'url' parameter for open action");
 
         if (!std.mem.startsWith(u8, url, "https://")) {
@@ -128,8 +129,8 @@ pub const BrowserTool = struct {
     }
 
     /// "read" — fetch URL content via curl and return body text (truncated to 8 KB).
-    fn executeRead(allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const url = parseStringField(args_json, "url") orelse
+    fn executeRead(allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const url = root.getString(args, "url") orelse
             return ToolResult.fail("Missing 'url' parameter for read action");
 
         // Use curl to fetch the page. Flags:
@@ -200,7 +201,9 @@ test "browser open launches system browser" {
     var bt = BrowserTool{};
     const t = bt.tool();
     // In test mode, spawn is skipped; verify the output message is correct.
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"open\", \"url\": \"https://example.com\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"open\", \"url\": \"https://example.com\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "example.com") != null);
@@ -210,7 +213,9 @@ test "browser open launches system browser" {
 test "browser open rejects http" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"open\", \"url\": \"http://example.com\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"open\", \"url\": \"http://example.com\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "https") != null);
 }
@@ -218,7 +223,9 @@ test "browser open rejects http" {
 test "browser screenshot redirects to screenshot tool" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"screenshot\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"screenshot\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "screenshot tool") != null);
 }
@@ -228,7 +235,9 @@ test "browser screenshot redirects to screenshot tool" {
 test "browser missing action parameter" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "action") != null);
 }
@@ -236,7 +245,9 @@ test "browser missing action parameter" {
 test "browser open missing url" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"open\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"open\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "url") != null);
 }
@@ -244,7 +255,9 @@ test "browser open missing url" {
 test "browser click action requires CDP" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"click\", \"selector\": \"#btn\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"click\", \"selector\": \"#btn\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "CDP") != null);
@@ -254,7 +267,9 @@ test "browser click action requires CDP" {
 test "browser read missing url" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"read\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"read\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "url") != null);
 }
@@ -263,7 +278,9 @@ test "browser open returns output with URL" {
     var bt = BrowserTool{};
     const t = bt.tool();
     // In test mode, spawn is skipped; verify the "Opened ..." message format.
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"open\", \"url\": \"https://docs.example.com/api\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"open\", \"url\": \"https://docs.example.com/api\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "docs.example.com") != null);
@@ -304,6 +321,8 @@ test "browser tool schema has action" {
 test "browser tool execute with empty json" {
     var bt = BrowserTool{};
     const t = bt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }

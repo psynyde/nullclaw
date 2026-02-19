@@ -98,6 +98,8 @@ pub const AgentConfig = struct {
     compaction_keep_recent: u32 = 20,
     compaction_max_summary_chars: u32 = 2_000,
     compaction_max_source_chars: u32 = 12_000,
+    /// Max seconds to wait for an LLM HTTP response (curl --max-time). 0 = no limit.
+    message_timeout_secs: u64 = 300,
 };
 
 pub const ToolsConfig = struct {
@@ -132,6 +134,8 @@ pub const TelegramConfig = struct {
     allowed_users: []const []const u8 = &.{},
     /// Use reply-to in private (1:1) chats. Groups always use reply-to.
     reply_in_private: bool = true,
+    /// Optional SOCKS5/HTTP proxy URL for all Telegram API requests (e.g. "socks5://host:port").
+    proxy: ?[]const u8 = null,
 };
 
 pub const DiscordConfig = struct {

@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 const COMPOSIO_API_BASE_V2 = "https://backend.composio.dev/api/v2";
 const COMPOSIO_API_BASE_V3 = "https://backend.composio.dev/api/v3";
@@ -28,9 +29,9 @@ pub const ComposioTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *ComposioTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -49,8 +50,8 @@ pub const ComposioTool = struct {
         ;
     }
 
-    fn execute(self: *ComposioTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const action = parseStringField(args_json, "action") orelse
+    fn execute(self: *ComposioTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
         if (self.api_key.len == 0) {
@@ -58,11 +59,11 @@ pub const ComposioTool = struct {
         }
 
         if (std.mem.eql(u8, action, "list")) {
-            return self.listActions(allocator, args_json);
+            return self.listActions(allocator, args);
         } else if (std.mem.eql(u8, action, "execute")) {
-            return self.executeAction(allocator, args_json);
+            return self.executeAction(allocator, args);
         } else if (std.mem.eql(u8, action, "connect")) {
-            return self.connectAction(allocator, args_json);
+            return self.connectAction(allocator, args);
         } else {
             const msg = try std.fmt.allocPrint(allocator, "Unknown action '{s}'. Use 'list', 'execute', or 'connect'.", .{action});
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
@@ -97,8 +98,8 @@ pub const ComposioTool = struct {
         return self.httpGet(allocator, url);
     }
 
-    fn listActions(self: *ComposioTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const app = parseStringField(args_json, "app");
+    fn listActions(self: *ComposioTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const app = root.getString(args, "app");
 
         // Try v3 first, fall back to v2
         const v3_result = try self.listActionsV3(allocator, app);
@@ -113,7 +114,7 @@ pub const ComposioTool = struct {
 
     // ── v3 execute action ──────────────────────────────────────────
 
-    fn executeActionV3(self: *ComposioTool, allocator: std.mem.Allocator, action_name: []const u8, args_json: []const u8, entity_id: ?[]const u8, connected_account_id: ?[]const u8) !ToolResult {
+    fn executeActionV3(self: *ComposioTool, allocator: std.mem.Allocator, action_name: []const u8, args: JsonObjectMap, entity_id: ?[]const u8, connected_account_id: ?[]const u8) !ToolResult {
         const slug = try normalizeToolSlug(allocator, action_name);
         defer allocator.free(slug);
 
@@ -124,11 +125,17 @@ pub const ComposioTool = struct {
         const eid = normalizeEntityId(entity_id);
 
         // Build JSON body with arguments, user_id, and optional connected_account_id
-        const params_str = parseStringField(args_json, "params") orelse "{}";
+        const params_json: ?[]const u8 = blk: {
+            if (root.getValue(args, "params")) |pv| {
+                break :blk std.json.Stringify.valueAlloc(allocator, pv, .{}) catch null;
+            }
+            break :blk null;
+        };
+        defer if (params_json) |pj| allocator.free(pj);
         var out: std.ArrayListUnmanaged(u8) = .empty;
         defer out.deinit(allocator);
         try out.appendSlice(allocator, "{\"arguments\":");
-        try out.appendSlice(allocator, params_str);
+        try out.appendSlice(allocator, params_json orelse "{}");
         try out.appendSlice(allocator, ",\"user_id\":\"");
         try appendJsonEscaped(&out, allocator, eid);
         try out.appendSlice(allocator, "\"");
@@ -146,31 +153,37 @@ pub const ComposioTool = struct {
 
     // ── v2 execute action (fallback) ───────────────────────────────
 
-    fn executeActionV2(self: *ComposioTool, allocator: std.mem.Allocator, action_name: []const u8, args_json: []const u8) !ToolResult {
+    fn executeActionV2(self: *ComposioTool, allocator: std.mem.Allocator, action_name: []const u8, args: JsonObjectMap) !ToolResult {
         var url_buf: [512]u8 = undefined;
         const url = std.fmt.bufPrint(&url_buf, COMPOSIO_API_BASE_V2 ++ "/actions/{s}/execute", .{action_name}) catch
             return ToolResult.fail("URL too long");
 
-        return self.httpPost(allocator, url, args_json);
+        // Re-serialize ObjectMap to JSON for the HTTP body
+        const json_val = std.json.Value{ .object = args };
+        const body = std.json.Stringify.valueAlloc(allocator, json_val, .{}) catch
+            return ToolResult.fail("Failed to serialize args");
+        defer allocator.free(body);
+
+        return self.httpPost(allocator, url, body);
     }
 
-    fn executeAction(self: *ComposioTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const action_name = parseStringField(args_json, "tool_slug") orelse
-            parseStringField(args_json, "action_name") orelse
+    fn executeAction(self: *ComposioTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const action_name = root.getString(args, "tool_slug") orelse
+            root.getString(args, "action_name") orelse
             return ToolResult.fail("Missing 'action_name' (or 'tool_slug') for execute");
 
-        const entity_id = parseStringField(args_json, "entity_id");
-        const connected_account_id = parseStringField(args_json, "connected_account_id");
+        const entity_id = root.getString(args, "entity_id");
+        const connected_account_id = root.getString(args, "connected_account_id");
 
         // Try v3 first, fall back to v2
-        const v3_result = try self.executeActionV3(allocator, action_name, args_json, entity_id, connected_account_id);
+        const v3_result = try self.executeActionV3(allocator, action_name, args, entity_id, connected_account_id);
         if (v3_result.success) return v3_result;
 
         // Free v3 error resources before fallback
         if (v3_result.error_msg) |e| allocator.free(e);
         if (v3_result.output.len > 0) allocator.free(v3_result.output);
 
-        return self.executeActionV2(allocator, action_name, args_json);
+        return self.executeActionV2(allocator, action_name, args);
     }
 
     // ── v3 connect ─────────────────────────────────────────────────
@@ -194,13 +207,13 @@ pub const ComposioTool = struct {
         return self.httpPost(allocator, url, body);
     }
 
-    fn connectAction(self: *ComposioTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const app = parseStringField(args_json, "app");
-        if (app == null and parseStringField(args_json, "auth_config_id") == null) {
+    fn connectAction(self: *ComposioTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const app = root.getString(args, "app");
+        if (app == null and root.getString(args, "auth_config_id") == null) {
             return ToolResult.fail("Missing 'app' or 'auth_config_id' for connect");
         }
 
-        const entity_raw = parseStringField(args_json, "entity_id");
+        const entity_raw = root.getString(args, "entity_id");
         const entity = if (entity_raw) |e| e else self.entity_id;
 
         // Try v3 first, fall back to v2
@@ -428,10 +441,10 @@ pub fn extractApiErrorMessage(allocator: std.mem.Allocator, body: []const u8) !?
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
     defer parsed.deinit();
 
-    const root = parsed.value;
+    const root_val = parsed.value;
 
     // Try {"error":{"message":"..."}}
-    if (root.object.get("error")) |err_val| {
+    if (root_val.object.get("error")) |err_val| {
         if (err_val == .object) {
             if (err_val.object.get("message")) |msg_val| {
                 if (msg_val == .string) {
@@ -442,7 +455,7 @@ pub fn extractApiErrorMessage(allocator: std.mem.Allocator, body: []const u8) !?
     }
 
     // Try {"message":"..."}
-    if (root.object.get("message")) |msg_val| {
+    if (root_val.object.get("message")) |msg_val| {
         if (msg_val == .string) {
             return try allocator.dupe(u8, msg_val.string);
         }
@@ -493,7 +506,9 @@ test "composio tool schema has action" {
 test "composio missing action returns error" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "action") != null);
 }
@@ -501,7 +516,9 @@ test "composio missing action returns error" {
 test "composio unknown action returns error" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"unknown\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"unknown\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unknown action") != null);
@@ -510,7 +527,9 @@ test "composio unknown action returns error" {
 test "composio no api key returns error" {
     var ct = ComposioTool{ .api_key = "", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"list\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"list\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "API key") != null);
 }
@@ -518,7 +537,9 @@ test "composio no api key returns error" {
 test "composio list action invokes curl" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"list\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"list\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     // curl actually runs — may succeed with API error JSON or fail with network error
@@ -529,7 +550,9 @@ test "composio list action invokes curl" {
 test "composio list with app filter invokes curl" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"list\", \"app\": \"gmail\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"list\", \"app\": \"gmail\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(result.output.len > 0 or result.error_msg != null);
@@ -538,7 +561,9 @@ test "composio list with app filter invokes curl" {
 test "composio execute missing action_name" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"execute\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"execute\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "action_name") != null);
 }
@@ -546,7 +571,9 @@ test "composio execute missing action_name" {
 test "composio execute with action_name invokes curl" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"execute\", \"action_name\": \"GMAIL_SEND\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"execute\", \"action_name\": \"GMAIL_SEND\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     // curl runs against real API — may return error JSON or network failure
@@ -556,7 +583,9 @@ test "composio execute with action_name invokes curl" {
 test "composio connect missing app" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"connect\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"connect\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "app") != null);
 }
@@ -564,7 +593,9 @@ test "composio connect missing app" {
 test "composio connect with app invokes curl" {
     var ct = ComposioTool{ .api_key = "test-key", .entity_id = "default" };
     const t = ct.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"connect\", \"app\": \"gmail\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"connect\", \"app\": \"gmail\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     // curl runs — result depends on network, but should not crash

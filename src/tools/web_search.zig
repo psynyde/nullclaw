@@ -4,9 +4,10 @@
 //! environment variable (free tier available at https://brave.com/search/api/).
 
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// Maximum number of search results.
 const MAX_RESULTS: usize = 10;
@@ -29,9 +30,9 @@ pub const WebSearchTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *WebSearchTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -48,14 +49,14 @@ pub const WebSearchTool = struct {
         ;
     }
 
-    fn execute(_: *WebSearchTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const query = parseStringField(args_json, "query") orelse
+    fn execute(_: *WebSearchTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const query = root.getString(args, "query") orelse
             return ToolResult.fail("Missing required 'query' parameter");
 
         if (std.mem.trim(u8, query, " \t\n\r").len == 0)
             return ToolResult.fail("'query' must not be empty");
 
-        const count = parseCount(args_json);
+        const count = parseCount(args);
 
         // Get API key from environment
         const api_key = std.posix.getenv("BRAVE_API_KEY") orelse
@@ -125,12 +126,11 @@ pub const WebSearchTool = struct {
     }
 };
 
-/// Parse count from args JSON. Returns DEFAULT_COUNT if not found or invalid.
-fn parseCount(json: []const u8) usize {
-    const count_str = parseStringField(json, "count") orelse return DEFAULT_COUNT;
-    const val = std.fmt.parseInt(usize, count_str, 10) catch return DEFAULT_COUNT;
-    if (val < 1) return 1;
-    if (val > MAX_RESULTS) return MAX_RESULTS;
+/// Parse count from args ObjectMap. Returns DEFAULT_COUNT if not found or invalid.
+fn parseCount(args: JsonObjectMap) usize {
+    const val_i64 = root.getInt(args, "count") orelse return DEFAULT_COUNT;
+    if (val_i64 < 1) return 1;
+    const val: usize = if (val_i64 > @as(i64, @intCast(MAX_RESULTS))) MAX_RESULTS else @intCast(val_i64);
     return val;
 }
 
@@ -160,13 +160,13 @@ pub fn formatBraveResults(allocator: std.mem.Allocator, json_body: []const u8, q
         return ToolResult.fail("Failed to parse search response JSON");
     defer parsed.deinit();
 
-    const root = switch (parsed.value) {
+    const root_val = switch (parsed.value) {
         .object => |o| o,
         else => return ToolResult.fail("Unexpected search response format"),
     };
 
     // Extract web results
-    const web = root.get("web") orelse
+    const web = root_val.get("web") orelse
         return ToolResult.ok("No web results found.");
 
     const web_obj = switch (web) {
@@ -235,14 +235,18 @@ test "WebSearchTool name and description" {
 
 test "WebSearchTool missing query fails" {
     var wst = WebSearchTool{};
-    const result = try wst.execute(testing.allocator, "{\"count\":5}");
+    const parsed = try root.parseTestArgs("{\"count\":5}");
+    defer parsed.deinit();
+    const result = try wst.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Missing required 'query' parameter", result.error_msg.?);
 }
 
 test "WebSearchTool empty query fails" {
     var wst = WebSearchTool{};
-    const result = try wst.execute(testing.allocator, "{\"query\":\"  \"}");
+    const parsed = try root.parseTestArgs("{\"query\":\"  \"}");
+    defer parsed.deinit();
+    const result = try wst.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("'query' must not be empty", result.error_msg.?);
 }
@@ -252,20 +256,32 @@ test "WebSearchTool no API key fails with helpful message" {
     // If it is set, the test would try to make a real request
     if (std.posix.getenv("BRAVE_API_KEY")) |_| return;
     var wst = WebSearchTool{};
-    const result = try wst.execute(testing.allocator, "{\"query\":\"zig programming\"}");
+    const parsed = try root.parseTestArgs("{\"query\":\"zig programming\"}");
+    defer parsed.deinit();
+    const result = try wst.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expect(std.mem.indexOf(u8, result.error_msg.?, "BRAVE_API_KEY") != null);
 }
 
 test "parseCount defaults to 5" {
-    try testing.expectEqual(@as(usize, DEFAULT_COUNT), parseCount("{}"));
-    try testing.expectEqual(@as(usize, DEFAULT_COUNT), parseCount("{\"query\":\"test\"}"));
+    const p1 = try root.parseTestArgs("{}");
+    defer p1.deinit();
+    try testing.expectEqual(@as(usize, DEFAULT_COUNT), parseCount(p1.value.object));
+    const p2 = try root.parseTestArgs("{\"query\":\"test\"}");
+    defer p2.deinit();
+    try testing.expectEqual(@as(usize, DEFAULT_COUNT), parseCount(p2.value.object));
 }
 
 test "parseCount clamps to range" {
-    try testing.expectEqual(@as(usize, 1), parseCount("{\"count\":\"0\"}"));
-    try testing.expectEqual(@as(usize, MAX_RESULTS), parseCount("{\"count\":\"100\"}"));
-    try testing.expectEqual(@as(usize, 3), parseCount("{\"count\":\"3\"}"));
+    const p1 = try root.parseTestArgs("{\"count\":0}");
+    defer p1.deinit();
+    try testing.expectEqual(@as(usize, 1), parseCount(p1.value.object));
+    const p2 = try root.parseTestArgs("{\"count\":100}");
+    defer p2.deinit();
+    try testing.expectEqual(@as(usize, MAX_RESULTS), parseCount(p2.value.object));
+    const p3 = try root.parseTestArgs("{\"count\":3}");
+    defer p3.deinit();
+    try testing.expectEqual(@as(usize, 3), parseCount(p3.value.object));
 }
 
 test "urlEncode basic" {

@@ -6,6 +6,47 @@
 
 const std = @import("std");
 
+// ── JSON arg extraction helpers ─────────────────────────────────
+// Used by all tool implementations to extract typed fields from
+// the pre-parsed ObjectMap passed by the dispatcher.
+
+pub const JsonObjectMap = std.json.ObjectMap;
+pub const JsonValue = std.json.Value;
+
+pub fn getString(args: JsonObjectMap, key: []const u8) ?[]const u8 {
+    const val = args.get(key) orelse return null;
+    return switch (val) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+pub fn getBool(args: JsonObjectMap, key: []const u8) ?bool {
+    const val = args.get(key) orelse return null;
+    return switch (val) {
+        .bool => |b| b,
+        else => null,
+    };
+}
+
+pub fn getInt(args: JsonObjectMap, key: []const u8) ?i64 {
+    const val = args.get(key) orelse return null;
+    return switch (val) {
+        .integer => |i| i,
+        else => null,
+    };
+}
+
+pub fn getValue(args: JsonObjectMap, key: []const u8) ?JsonValue {
+    return args.get(key);
+}
+
+/// Test helper: parse a JSON string into a Parsed(Value) for use in tool tests.
+/// The caller must `defer parsed.deinit()` and extract `.value.object` for the ObjectMap.
+pub fn parseTestArgs(json_str: []const u8) !std.json.Parsed(JsonValue) {
+    return std.json.parseFromSlice(JsonValue, std.testing.allocator, json_str, .{});
+}
+
 // Sub-modules
 pub const shell = @import("shell.zig");
 pub const file_read = @import("file_read.zig");
@@ -82,14 +123,14 @@ pub const Tool = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        execute: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult,
+        execute: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult,
         name: *const fn (ptr: *anyopaque) []const u8,
         description: *const fn (ptr: *anyopaque) []const u8,
         parameters_json: *const fn (ptr: *anyopaque) []const u8,
     };
 
-    pub fn execute(self: Tool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        return self.vtable.execute(self.ptr, allocator, args_json);
+    pub fn execute(self: Tool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        return self.vtable.execute(self.ptr, allocator, args);
     }
 
     pub fn name(self: Tool) []const u8 {
@@ -346,6 +387,63 @@ pub fn subagentTools(
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
+
+test "getString returns unescaped newlines and tabs" {
+    const parsed = try parseTestArgs("{\"content\":\"line1\\nline2\\ttab\"}");
+    defer parsed.deinit();
+    const val = getString(parsed.value.object, "content").?;
+    try std.testing.expectEqualStrings("line1\nline2\ttab", val);
+}
+
+test "getString returns unescaped quotes and backslashes" {
+    const parsed = try parseTestArgs("{\"s\":\"say \\\"hello\\\" path\\\\dir\"}");
+    defer parsed.deinit();
+    const val = getString(parsed.value.object, "s").?;
+    try std.testing.expectEqualStrings("say \"hello\" path\\dir", val);
+}
+
+test "getString returns unescaped unicode" {
+    // \u0041 = A, \u041f = П
+    const parsed = try parseTestArgs("{\"s\":\"\\u0041BC \\u041f\\u0440\\u0438\\u0432\\u0435\\u0442\"}");
+    defer parsed.deinit();
+    const val = getString(parsed.value.object, "s").?;
+    try std.testing.expectEqualStrings("ABC Привет", val);
+}
+
+test "getString returns unescaped shell script content" {
+    const parsed = try parseTestArgs("{\"content\":\"#!/bin/bash\\necho \\\"hello\\\"\\nexit 0\"}");
+    defer parsed.deinit();
+    const val = getString(parsed.value.object, "content").?;
+    try std.testing.expectEqualStrings("#!/bin/bash\necho \"hello\"\nexit 0", val);
+}
+
+test "getString returns null for missing key" {
+    const parsed = try parseTestArgs("{\"other\":\"val\"}");
+    defer parsed.deinit();
+    try std.testing.expect(getString(parsed.value.object, "content") == null);
+}
+
+test "getString returns null for non-string value" {
+    const parsed = try parseTestArgs("{\"count\":42}");
+    defer parsed.deinit();
+    try std.testing.expect(getString(parsed.value.object, "count") == null);
+}
+
+test "getBool extracts boolean values" {
+    const parsed = try parseTestArgs("{\"a\":true,\"b\":false}");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(?bool, true), getBool(parsed.value.object, "a"));
+    try std.testing.expectEqual(@as(?bool, false), getBool(parsed.value.object, "b"));
+    try std.testing.expect(getBool(parsed.value.object, "missing") == null);
+}
+
+test "getInt extracts integer values" {
+    const parsed = try parseTestArgs("{\"n\":42,\"neg\":-5}");
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(?i64, 42), getInt(parsed.value.object, "n"));
+    try std.testing.expectEqual(@as(?i64, -5), getInt(parsed.value.object, "neg"));
+    try std.testing.expect(getInt(parsed.value.object, "missing") == null);
+}
 
 test "tool result ok" {
     const r = ToolResult.ok("hello");

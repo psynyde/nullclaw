@@ -78,6 +78,7 @@ pub const Agent = struct {
     auto_save: bool,
     token_limit: u64 = 0,
     max_tokens: u32 = 4096,
+    message_timeout_secs: u64 = 0,
     compaction_keep_recent: u32 = DEFAULT_COMPACTION_KEEP_RECENT,
     compaction_max_summary_chars: u32 = DEFAULT_COMPACTION_MAX_SUMMARY_CHARS,
     compaction_max_source_chars: u32 = DEFAULT_COMPACTION_MAX_SOURCE_CHARS,
@@ -98,6 +99,9 @@ pub const Agent = struct {
 
     /// Whether compaction was performed during the last turn.
     last_turn_compacted: bool = false,
+
+    /// Whether context was force-compacted due to exhaustion during the current turn.
+    context_was_compacted: bool = false,
 
     /// An owned copy of a ChatMessage, where content is heap-allocated.
     const OwnedMessage = struct {
@@ -147,6 +151,7 @@ pub const Agent = struct {
             .auto_save = cfg.memory.auto_save,
             .token_limit = cfg.agent.token_limit,
             .max_tokens = cfg.max_tokens,
+            .message_timeout_secs = cfg.agent.message_timeout_secs,
             .compaction_keep_recent = cfg.agent.compaction_keep_recent,
             .compaction_max_summary_chars = cfg.agent.compaction_max_summary_chars,
             .compaction_max_source_chars = cfg.agent.compaction_max_source_chars,
@@ -413,6 +418,8 @@ pub const Agent = struct {
     /// Execute a single conversation turn: send messages to LLM, parse tool calls,
     /// execute tools, and loop until a final text response is produced.
     pub fn turn(self: *Agent, user_message: []const u8) ![]const u8 {
+        self.context_was_compacted = false;
+
         // Handle slash commands before sending to LLM (saves tokens)
         if (try self.handleSlashCommand(user_message)) |response| {
             return response;
@@ -506,6 +513,7 @@ pub const Agent = struct {
                         .temperature = self.temperature,
                         .max_tokens = self.max_tokens,
                         .tools = null,
+                        .timeout_secs = self.message_timeout_secs,
                     },
                     self.model_name,
                     self.temperature,
@@ -538,6 +546,7 @@ pub const Agent = struct {
                         .temperature = self.temperature,
                         .max_tokens = self.max_tokens,
                         .tools = if (self.provider.supportsNativeTools()) self.tool_specs else null,
+                        .timeout_secs = self.message_timeout_secs,
                     },
                     self.model_name,
                     self.temperature,
@@ -553,6 +562,30 @@ pub const Agent = struct {
                     } };
                     self.observer.recordEvent(&fail_event);
 
+                    // Context exhaustion: compact immediately before first retry
+                    const err_name = @errorName(err);
+                    if (providers.reliable.isContextExhausted(err_name) and
+                        self.history.items.len > CONTEXT_RECOVERY_MIN_HISTORY and
+                        self.forceCompressHistory())
+                    {
+                        self.context_was_compacted = true;
+                        const recovery_msgs = self.buildMessageSlice() catch return err;
+                        defer self.allocator.free(recovery_msgs);
+                        break :retry_blk self.provider.chat(
+                            self.allocator,
+                            .{
+                                .messages = recovery_msgs,
+                                .model = self.model_name,
+                                .temperature = self.temperature,
+                                .max_tokens = self.max_tokens,
+                                .tools = if (self.provider.supportsNativeTools()) self.tool_specs else null,
+                                .timeout_secs = self.message_timeout_secs,
+                            },
+                            self.model_name,
+                            self.temperature,
+                        ) catch return err;
+                    }
+
                     // Retry once
                     std.Thread.sleep(500 * std.time.ns_per_ms);
                     break :retry_blk self.provider.chat(
@@ -563,6 +596,7 @@ pub const Agent = struct {
                             .temperature = self.temperature,
                             .max_tokens = self.max_tokens,
                             .tools = if (self.provider.supportsNativeTools()) self.tool_specs else null,
+                            .timeout_secs = self.message_timeout_secs,
                         },
                         self.model_name,
                         self.temperature,
@@ -570,6 +604,7 @@ pub const Agent = struct {
                         // Context exhaustion recovery: if we have enough history,
                         // force-compress and retry once more
                         if (self.history.items.len > CONTEXT_RECOVERY_MIN_HISTORY and self.forceCompressHistory()) {
+                            self.context_was_compacted = true;
                             const recovery_msgs = self.buildMessageSlice() catch return retry_err;
                             defer self.allocator.free(recovery_msgs);
                             break :retry_blk self.provider.chat(
@@ -580,6 +615,7 @@ pub const Agent = struct {
                                     .temperature = self.temperature,
                                     .max_tokens = self.max_tokens,
                                     .tools = if (self.provider.supportsNativeTools()) self.tool_specs else null,
+                                    .timeout_secs = self.message_timeout_secs,
                                 },
                                 self.model_name,
                                 self.temperature,
@@ -670,7 +706,10 @@ pub const Agent = struct {
 
             if (parsed_calls.len == 0) {
                 // No tool calls — final response
-                const final_text = try self.allocator.dupe(u8, display_text);
+                const final_text = if (self.context_was_compacted) blk: {
+                    self.context_was_compacted = false;
+                    break :blk try std.fmt.allocPrint(self.allocator, "[Контекст сжат]\n\n{s}", .{display_text});
+                } else try self.allocator.dupe(u8, display_text);
 
                 // Dupe from display_text directly (not from final_text) to avoid double-dupe
                 try self.history.append(self.allocator, .{
@@ -773,10 +812,39 @@ pub const Agent = struct {
     }
 
     /// Execute a tool by name lookup.
+    /// Parses arguments_json once into a std.json.ObjectMap and passes it to the tool.
     fn executeTool(self: *Agent, call: ParsedToolCall) ToolExecutionResult {
         for (self.tools) |t| {
             if (std.mem.eql(u8, t.name(), call.name)) {
-                const result = t.execute(self.allocator, call.arguments_json) catch |err| {
+                // Parse arguments JSON to ObjectMap ONCE
+                const parsed = std.json.parseFromSlice(
+                    std.json.Value,
+                    self.allocator,
+                    call.arguments_json,
+                    .{},
+                ) catch {
+                    return .{
+                        .name = call.name,
+                        .output = "Invalid arguments JSON",
+                        .success = false,
+                        .tool_call_id = call.tool_call_id,
+                    };
+                };
+                defer parsed.deinit();
+
+                const args: std.json.ObjectMap = switch (parsed.value) {
+                    .object => |o| o,
+                    else => {
+                        return .{
+                            .name = call.name,
+                            .output = "Arguments must be a JSON object",
+                            .success = false,
+                            .tool_call_id = call.tool_call_id,
+                        };
+                    },
+                };
+
+                const result = t.execute(self.allocator, args) catch |err| {
                     return .{
                         .name = call.name,
                         .output = @errorName(err),
@@ -918,6 +986,43 @@ pub const Agent = struct {
     /// Get current history length.
     pub fn historyLen(self: *const Agent) usize {
         return self.history.items.len;
+    }
+
+    /// Load persisted messages into history (for session restore).
+    /// Each entry has .role ("user"/"assistant") and .content.
+    /// The agent takes ownership of the content strings.
+    pub fn loadHistory(self: *Agent, entries: anytype) !void {
+        for (entries) |entry| {
+            const role: providers.Role = if (std.mem.eql(u8, entry.role, "assistant"))
+                .assistant
+            else if (std.mem.eql(u8, entry.role, "system"))
+                .system
+            else
+                .user;
+            try self.history.append(self.allocator, .{
+                .role = role,
+                .content = try self.allocator.dupe(u8, entry.content),
+            });
+        }
+    }
+
+    /// Get history entries as role-string + content pairs (for persistence).
+    /// Caller owns the returned slice but NOT the inner strings (borrows from history).
+    pub fn getHistory(self: *const Agent, allocator: std.mem.Allocator) ![]struct { role: []const u8, content: []const u8 } {
+        const Pair = struct { role: []const u8, content: []const u8 };
+        const result = try allocator.alloc(Pair, self.history.items.len);
+        for (self.history.items, 0..) |*msg, i| {
+            result[i] = .{
+                .role = switch (msg.role) {
+                    .system => "system",
+                    .user => "user",
+                    .assistant => "assistant",
+                    .tool => "tool",
+                },
+                .content = msg.content,
+            };
+        }
+        return result;
     }
 };
 

@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const isPathSafe = @import("file_edit.zig").isPathSafe;
 const isResolvedPathAllowed = @import("file_edit.zig").isResolvedPathAllowed;
 
@@ -24,9 +25,9 @@ pub const FileWriteTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *FileWriteTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -43,11 +44,11 @@ pub const FileWriteTool = struct {
         ;
     }
 
-    fn execute(self: *FileWriteTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const path = parseStringField(args_json, "path") orelse
+    fn execute(self: *FileWriteTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const path = root.getString(args, "path") orelse
             return ToolResult.fail("Missing 'path' parameter");
 
-        const content = parseStringField(args_json, "content") orelse
+        const content = root.getString(args, "content") orelse
             return ToolResult.fail("Missing 'content' parameter");
 
         // Build full path — absolute or relative
@@ -132,7 +133,9 @@ test "file_write creates file" {
 
     var ft = FileWriteTool{ .workspace_dir = ws_path };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"out.txt\", \"content\": \"written!\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"out.txt\", \"content\": \"written!\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
 
@@ -153,7 +156,9 @@ test "file_write creates parent dirs" {
 
     var ft = FileWriteTool{ .workspace_dir = ws_path };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"a/b/c/deep.txt\", \"content\": \"deep\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"a/b/c/deep.txt\", \"content\": \"deep\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
 
@@ -173,7 +178,9 @@ test "file_write overwrites existing" {
 
     var ft = FileWriteTool{ .workspace_dir = ws_path };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"exist.txt\", \"content\": \"new\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"exist.txt\", \"content\": \"new\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
 
@@ -187,7 +194,9 @@ test "file_write overwrites existing" {
 test "file_write blocks path traversal" {
     var ft = FileWriteTool{ .workspace_dir = "/tmp/workspace" };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"../../etc/evil\", \"content\": \"bad\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"../../etc/evil\", \"content\": \"bad\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not allowed") != null);
@@ -196,7 +205,9 @@ test "file_write blocks path traversal" {
 test "file_write blocks absolute path" {
     var ft = FileWriteTool{ .workspace_dir = "/tmp/workspace" };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"/etc/evil\", \"content\": \"bad\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"/etc/evil\", \"content\": \"bad\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
 }
@@ -204,7 +215,9 @@ test "file_write blocks absolute path" {
 test "file_write missing path param" {
     var ft = FileWriteTool{ .workspace_dir = "/tmp" };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"content\": \"data\"}");
+    const parsed = try root.parseTestArgs("{\"content\": \"data\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
 }
@@ -212,7 +225,9 @@ test "file_write missing path param" {
 test "file_write missing content param" {
     var ft = FileWriteTool{ .workspace_dir = "/tmp" };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"file.txt\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"file.txt\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // error_msg is a static string from ToolResult.fail(), don't free it
     try std.testing.expect(!result.success);
 }
@@ -225,7 +240,9 @@ test "file_write empty content" {
 
     var ft = FileWriteTool{ .workspace_dir = ws_path };
     const t = ft.tool();
-    const result = try t.execute(std.testing.allocator, "{\"path\": \"empty.txt\", \"content\": \"\"}");
+    const parsed = try root.parseTestArgs("{\"path\": \"empty.txt\", \"content\": \"\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
 

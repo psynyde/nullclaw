@@ -118,6 +118,21 @@ pub const SessionManager = struct {
             .mutex = .{},
         };
 
+        // Restore persisted conversation history from SQLite
+        if (self.mem) |mem| {
+            if (mem.asSqlite()) |sqlite_mem| {
+                const entries = sqlite_mem.loadMessages(self.allocator, session_key) catch &.{};
+                if (entries.len > 0) {
+                    session.agent.loadHistory(entries) catch {};
+                    for (entries) |entry| {
+                        self.allocator.free(entry.role);
+                        self.allocator.free(entry.content);
+                    }
+                    self.allocator.free(entries);
+                }
+            }
+        }
+
         try self.sessions.put(self.allocator, owned_key, session);
         return session;
     }
@@ -137,6 +152,21 @@ pub const SessionManager = struct {
         // Track consolidation timestamp
         if (session.agent.last_turn_compacted) {
             session.last_consolidated = @intCast(@max(0, std.time.timestamp()));
+        }
+
+        // Persist messages to SQLite
+        if (self.mem) |mem| {
+            if (mem.asSqlite()) |sqlite_mem| {
+                const trimmed = std.mem.trim(u8, content, " \t\r\n");
+                if (std.mem.eql(u8, trimmed, "/new")) {
+                    // Clear persisted messages on session reset
+                    sqlite_mem.clearMessages(session_key) catch {};
+                } else if (!std.mem.startsWith(u8, trimmed, "/")) {
+                    // Persist user + assistant messages (skip slash commands)
+                    sqlite_mem.saveMessage(session_key, "user", content) catch {};
+                    sqlite_mem.saveMessage(session_key, "assistant", response) catch {};
+                }
+            }
         }
 
         return response;

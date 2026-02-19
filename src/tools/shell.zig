@@ -1,6 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const isResolvedPathAllowed = @import("file_edit.zig").isResolvedPathAllowed;
 
 /// Default maximum shell command execution time (nanoseconds).
@@ -33,9 +35,9 @@ pub const ShellTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *ShellTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -52,13 +54,13 @@ pub const ShellTool = struct {
         ;
     }
 
-    fn execute(self: *ShellTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        // Parse the command from JSON
-        const command = parseStringField(args_json, "command") orelse
+    fn execute(self: *ShellTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        // Parse the command from the pre-parsed JSON object
+        const command = root.getString(args, "command") orelse
             return ToolResult.fail("Missing 'command' parameter");
 
         // Determine working directory
-        const effective_cwd = if (parseStringField(args_json, "cwd")) |cwd| blk: {
+        const effective_cwd = if (root.getString(args, "cwd")) |cwd| blk: {
             // cwd must be absolute
             if (cwd.len == 0 or cwd[0] != '/')
                 return ToolResult.fail("cwd must be an absolute path");
@@ -130,6 +132,7 @@ pub const ShellTool = struct {
 };
 
 /// Extract a string field value from a JSON blob (minimal parser — no allocations).
+/// NOTE: Prefer root.getString() with pre-parsed ObjectMap for tool implementations.
 pub fn parseStringField(json: []const u8, key: []const u8) ?[]const u8 {
     // Find "key": "value"
     // Build the search pattern: "key":"  or "key" : "
@@ -211,7 +214,9 @@ test "shell tool schema has command" {
 test "shell executes echo" {
     var st = ShellTool{ .workspace_dir = "/tmp" };
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"command\": \"echo hello\"}");
+    const parsed = try root.parseTestArgs("{\"command\": \"echo hello\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(result.success);
@@ -221,7 +226,9 @@ test "shell executes echo" {
 test "shell captures failing command" {
     var st = ShellTool{ .workspace_dir = "/tmp" };
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"command\": \"ls /nonexistent_dir_xyz_42\"}");
+    const parsed = try root.parseTestArgs("{\"command\": \"ls /nonexistent_dir_xyz_42\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
@@ -230,7 +237,9 @@ test "shell captures failing command" {
 test "shell missing command param" {
     var st = ShellTool{ .workspace_dir = "/tmp" };
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(result.error_msg != null);
 }
@@ -269,7 +278,9 @@ test "parseIntField negative" {
 
 test "shell cwd without allowed_paths is rejected" {
     var st = ShellTool{ .workspace_dir = "/tmp" };
-    const result = try st.execute(std.testing.allocator, "{\"command\": \"pwd\", \"cwd\": \"/tmp\"}");
+    const parsed = try root.parseTestArgs("{\"command\": \"pwd\", \"cwd\": \"/tmp\"}");
+    defer parsed.deinit();
+    const result = try st.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "no allowed_paths") != null);
@@ -277,7 +288,9 @@ test "shell cwd without allowed_paths is rejected" {
 
 test "shell cwd relative path is rejected" {
     var st = ShellTool{ .workspace_dir = "/tmp", .allowed_paths = &.{"/tmp"} };
-    const result = try st.execute(std.testing.allocator, "{\"command\": \"pwd\", \"cwd\": \"relative\"}");
+    const parsed = try root.parseTestArgs("{\"command\": \"pwd\", \"cwd\": \"relative\"}");
+    defer parsed.deinit();
+    const result = try st.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "absolute") != null);
@@ -292,8 +305,11 @@ test "shell cwd with allowed_paths runs in cwd" {
     var args_buf: [512]u8 = undefined;
     const args = try std.fmt.bufPrint(&args_buf, "{{\"command\": \"pwd\", \"cwd\": \"{s}\"}}", .{tmp_path});
 
+    const parsed = try root.parseTestArgs(args);
+    defer parsed.deinit();
+
     var st = ShellTool{ .workspace_dir = "/tmp", .allowed_paths = &.{tmp_path} };
-    const result = try st.execute(std.testing.allocator, args);
+    const result = try st.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
 

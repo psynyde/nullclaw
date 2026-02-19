@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const cron = @import("../cron.zig");
 const CronScheduler = cron.CronScheduler;
 const loadScheduler = @import("cron_add.zig").loadScheduler;
@@ -23,9 +24,9 @@ pub const ScheduleTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *ScheduleTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -42,8 +43,8 @@ pub const ScheduleTool = struct {
         ;
     }
 
-    fn execute(_: *ScheduleTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const action = parseStringField(args_json, "action") orelse
+    fn execute(_: *ScheduleTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
         if (std.mem.eql(u8, action, "list")) {
@@ -82,7 +83,7 @@ pub const ScheduleTool = struct {
         }
 
         if (std.mem.eql(u8, action, "get")) {
-            const id = parseStringField(args_json, "id") orelse
+            const id = root.getString(args, "id") orelse
                 return ToolResult.fail("Missing 'id' parameter for get action");
 
             var scheduler = loadScheduler(allocator) catch {
@@ -114,9 +115,9 @@ pub const ScheduleTool = struct {
         }
 
         if (std.mem.eql(u8, action, "create") or std.mem.eql(u8, action, "add")) {
-            const command = parseStringField(args_json, "command") orelse
+            const command = root.getString(args, "command") orelse
                 return ToolResult.fail("Missing 'command' parameter");
-            const expression = parseStringField(args_json, "expression") orelse
+            const expression = root.getString(args, "expression") orelse
                 return ToolResult.fail("Missing 'expression' parameter for cron job");
 
             var scheduler = loadScheduler(allocator) catch {
@@ -140,9 +141,9 @@ pub const ScheduleTool = struct {
         }
 
         if (std.mem.eql(u8, action, "once")) {
-            const command = parseStringField(args_json, "command") orelse
+            const command = root.getString(args, "command") orelse
                 return ToolResult.fail("Missing 'command' parameter");
-            const delay = parseStringField(args_json, "delay") orelse
+            const delay = root.getString(args, "delay") orelse
                 return ToolResult.fail("Missing 'delay' parameter for one-shot task");
 
             var scheduler = loadScheduler(allocator) catch {
@@ -166,7 +167,7 @@ pub const ScheduleTool = struct {
         }
 
         if (std.mem.eql(u8, action, "cancel") or std.mem.eql(u8, action, "remove")) {
-            const id = parseStringField(args_json, "id") orelse
+            const id = root.getString(args, "id") orelse
                 return ToolResult.fail("Missing 'id' parameter for cancel action");
 
             var scheduler = loadScheduler(allocator) catch {
@@ -184,7 +185,7 @@ pub const ScheduleTool = struct {
         }
 
         if (std.mem.eql(u8, action, "pause") or std.mem.eql(u8, action, "resume")) {
-            const id = parseStringField(args_json, "id") orelse
+            const id = root.getString(args, "id") orelse
                 return ToolResult.fail("Missing 'id' parameter");
 
             var scheduler = loadScheduler(allocator) catch {
@@ -228,7 +229,9 @@ test "schedule schema has action" {
 test "schedule list returns success" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"list\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"list\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     // Either "No scheduled jobs." or a formatted job list
@@ -238,7 +241,9 @@ test "schedule list returns success" {
 test "schedule unknown action" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"explode\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"explode\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unknown action") != null);
@@ -247,7 +252,9 @@ test "schedule unknown action" {
 test "schedule create with expression" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"create\", \"expression\": \"*/5 * * * *\", \"command\": \"echo hello\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"create\", \"expression\": \"*/5 * * * *\", \"command\": \"echo hello\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     // Succeeds if HOME/.nullclaw is writable, otherwise may fail gracefully
     if (result.success) {
@@ -260,7 +267,9 @@ test "schedule create with expression" {
 test "schedule missing action" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "action") != null);
 }
@@ -268,7 +277,9 @@ test "schedule missing action" {
 test "schedule get missing id" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"get\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"get\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "id") != null);
 }
@@ -276,7 +287,9 @@ test "schedule get missing id" {
 test "schedule get nonexistent job" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"get\", \"id\": \"nonexistent-123\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"get\", \"id\": \"nonexistent-123\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not found") != null);
@@ -285,14 +298,18 @@ test "schedule get nonexistent job" {
 test "schedule cancel requires id" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"cancel\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"cancel\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
 test "schedule cancel nonexistent job returns not found" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"cancel\", \"id\": \"job-nonexistent\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"cancel\", \"id\": \"job-nonexistent\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     // Job doesn't exist in the real scheduler, so cancel returns not-found or success if previously created
@@ -304,7 +321,9 @@ test "schedule cancel nonexistent job returns not found" {
 test "schedule remove nonexistent job returns not found" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"remove\", \"id\": \"job-nonexistent\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"remove\", \"id\": \"job-nonexistent\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     if (!result.success) {
@@ -315,7 +334,9 @@ test "schedule remove nonexistent job returns not found" {
 test "schedule pause nonexistent job returns not found" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"pause\", \"id\": \"job-nonexistent\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"pause\", \"id\": \"job-nonexistent\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     if (!result.success) {
@@ -326,7 +347,9 @@ test "schedule pause nonexistent job returns not found" {
 test "schedule resume nonexistent job returns not found" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"resume\", \"id\": \"job-nonexistent\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"resume\", \"id\": \"job-nonexistent\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     if (!result.success) {
@@ -337,7 +360,9 @@ test "schedule resume nonexistent job returns not found" {
 test "schedule once creates one-shot task" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"once\", \"delay\": \"30m\", \"command\": \"echo later\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"once\", \"delay\": \"30m\", \"command\": \"echo later\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     if (result.success) {
         try std.testing.expect(std.mem.indexOf(u8, result.output, "one-shot") != null);
@@ -347,7 +372,9 @@ test "schedule once creates one-shot task" {
 test "schedule add creates recurring job" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"add\", \"expression\": \"0 * * * *\", \"command\": \"echo hourly\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"add\", \"expression\": \"0 * * * *\", \"command\": \"echo hourly\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     if (result.success) {
         try std.testing.expect(std.mem.indexOf(u8, result.output, "Created job") != null);
@@ -357,7 +384,9 @@ test "schedule add creates recurring job" {
 test "schedule create missing command" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"create\", \"expression\": \"* * * * *\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"create\", \"expression\": \"* * * * *\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "command") != null);
 }
@@ -365,7 +394,9 @@ test "schedule create missing command" {
 test "schedule create missing expression" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"create\", \"command\": \"echo hi\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"create\", \"command\": \"echo hi\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "expression") != null);
 }
@@ -373,7 +404,9 @@ test "schedule create missing expression" {
 test "schedule once missing delay" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"once\", \"command\": \"echo hi\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"once\", \"command\": \"echo hi\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "delay") != null);
 }
@@ -381,13 +414,17 @@ test "schedule once missing delay" {
 test "schedule pause requires id" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"pause\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"pause\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
 test "schedule resume requires id" {
     var st = ScheduleTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"resume\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"resume\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }

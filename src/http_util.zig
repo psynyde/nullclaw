@@ -8,12 +8,21 @@ const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.http_util);
 
-/// HTTP POST via curl subprocess.
+/// HTTP POST via curl subprocess with optional proxy and timeout.
 ///
 /// `headers` is a slice of header strings (e.g. `"Authorization: Bearer xxx"`).
+/// `proxy` is an optional proxy URL (e.g. `"socks5://host:port"`).
+/// `max_time` is an optional --max-time value as a string (e.g. `"300"`).
 /// Returns the response body. Caller owns returned memory.
-pub fn curlPost(allocator: Allocator, url: []const u8, body: []const u8, headers: []const []const u8) ![]u8 {
-    var argv_buf: [32][]const u8 = undefined;
+pub fn curlPostWithProxy(
+    allocator: Allocator,
+    url: []const u8,
+    body: []const u8,
+    headers: []const []const u8,
+    proxy: ?[]const u8,
+    max_time: ?[]const u8,
+) ![]u8 {
+    var argv_buf: [40][]const u8 = undefined;
     var argc: usize = 0;
 
     argv_buf[argc] = "curl";
@@ -28,6 +37,20 @@ pub fn curlPost(allocator: Allocator, url: []const u8, body: []const u8, headers
     argc += 1;
     argv_buf[argc] = "Content-Type: application/json";
     argc += 1;
+
+    if (proxy) |p| {
+        argv_buf[argc] = "--proxy";
+        argc += 1;
+        argv_buf[argc] = p;
+        argc += 1;
+    }
+
+    if (max_time) |mt| {
+        argv_buf[argc] = "--max-time";
+        argc += 1;
+        argv_buf[argc] = mt;
+        argc += 1;
+    }
 
     for (headers) |hdr| {
         if (argc + 2 > argv_buf.len) break;
@@ -61,17 +84,28 @@ pub fn curlPost(allocator: Allocator, url: []const u8, body: []const u8, headers
     return stdout;
 }
 
+/// HTTP POST via curl subprocess (no proxy, no timeout).
+pub fn curlPost(allocator: Allocator, url: []const u8, body: []const u8, headers: []const []const u8) ![]u8 {
+    return curlPostWithProxy(allocator, url, body, headers, null, null);
+}
+
 /// HTTP POST via curl subprocess with no extra headers.
 pub fn curlPostSimple(allocator: Allocator, url: []const u8, body: []const u8) ![]u8 {
     return curlPost(allocator, url, body, &.{});
 }
 
-/// HTTP GET via curl subprocess.
+/// HTTP GET via curl subprocess with optional proxy.
 ///
 /// `headers` is a slice of header strings (e.g. `"Authorization: Bearer xxx"`).
 /// `timeout_secs` sets --max-time. Returns the response body. Caller owns returned memory.
-pub fn curlGet(allocator: Allocator, url: []const u8, headers: []const []const u8, timeout_secs: []const u8) ![]u8 {
-    var argv_buf: [32][]const u8 = undefined;
+pub fn curlGetWithProxy(
+    allocator: Allocator,
+    url: []const u8,
+    headers: []const []const u8,
+    timeout_secs: []const u8,
+    proxy: ?[]const u8,
+) ![]u8 {
+    var argv_buf: [40][]const u8 = undefined;
     var argc: usize = 0;
 
     argv_buf[argc] = "curl";
@@ -82,6 +116,13 @@ pub fn curlGet(allocator: Allocator, url: []const u8, headers: []const []const u
     argc += 1;
     argv_buf[argc] = timeout_secs;
     argc += 1;
+
+    if (proxy) |p| {
+        argv_buf[argc] = "--proxy";
+        argc += 1;
+        argv_buf[argc] = p;
+        argc += 1;
+    }
 
     for (headers) |hdr| {
         if (argc + 2 > argv_buf.len) break;
@@ -115,6 +156,11 @@ pub fn curlGet(allocator: Allocator, url: []const u8, headers: []const []const u
     }
 
     return stdout;
+}
+
+/// HTTP GET via curl subprocess (no proxy).
+pub fn curlGet(allocator: Allocator, url: []const u8, headers: []const []const u8, timeout_secs: []const u8) ![]u8 {
+    return curlGetWithProxy(allocator, url, headers, timeout_secs, null);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

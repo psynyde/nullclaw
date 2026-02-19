@@ -159,6 +159,16 @@ pub const Memory = struct {
         self.vtable.deinit(self.ptr);
     }
 
+    /// Try to get the underlying SqliteMemory (for session persistence).
+    /// Returns null if the backend is not SQLite.
+    pub fn asSqlite(self: Memory) ?*SqliteMemory {
+        // Check if vtable matches SqliteMemory's vtable
+        if (self.vtable == &SqliteMemory.vtable) {
+            return @ptrCast(@alignCast(self.ptr));
+        }
+        return null;
+    }
+
     /// Hybrid search: combine keyword recall with optional vector similarity.
     /// This is a convenience method that wraps recall() and merges results.
     /// If an embedding provider is available, it can be used for vector search;

@@ -280,7 +280,7 @@ pub const OllamaProvider = struct {
         const body = try buildChatRequestBody(allocator, request, model, temperature);
         defer allocator.free(body);
 
-        const resp_body = root.curlPost(allocator, url, body, &.{}) catch return error.OllamaApiError;
+        const resp_body = root.curlPostTimed(allocator, url, body, &.{}, request.timeout_secs) catch return error.OllamaApiError;
         defer allocator.free(resp_body);
 
         const text = try parseResponse(allocator, resp_body);

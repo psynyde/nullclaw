@@ -1,6 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const cron = @import("../cron.zig");
 const CronScheduler = cron.CronScheduler;
 const loadScheduler = @import("cron_add.zig").loadScheduler;
@@ -21,9 +23,9 @@ pub const CronListTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *CronListTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -40,7 +42,7 @@ pub const CronListTool = struct {
         ;
     }
 
-    fn execute(_: *CronListTool, allocator: std.mem.Allocator, _: []const u8) !ToolResult {
+    fn execute(_: *CronListTool, allocator: std.mem.Allocator, _: JsonObjectMap) !ToolResult {
         var scheduler = loadScheduler(allocator) catch {
             return ToolResult{ .success = true, .output = try allocator.dupe(u8, "No scheduled cron jobs.") };
         };
@@ -145,7 +147,9 @@ test "cron_list tool parameters" {
 test "cron_list execute returns success" {
     var cl = CronListTool{};
     const t = cl.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     // Either "No scheduled cron jobs." or a formatted job list

@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const mem_root = @import("../memory/root.zig");
 const Memory = mem_root.Memory;
 const MemoryCategory = mem_root.MemoryCategory;
@@ -24,9 +25,9 @@ pub const MemoryStoreTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *MemoryStoreTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -43,14 +44,14 @@ pub const MemoryStoreTool = struct {
         ;
     }
 
-    fn execute(self: *MemoryStoreTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const key = parseStringField(args_json, "key") orelse
+    fn execute(self: *MemoryStoreTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const key = root.getString(args, "key") orelse
             return ToolResult.fail("Missing 'key' parameter");
 
-        const content = parseStringField(args_json, "content") orelse
+        const content = root.getString(args, "content") orelse
             return ToolResult.fail("Missing 'content' parameter");
 
-        const category_str = parseStringField(args_json, "category") orelse "core";
+        const category_str = root.getString(args, "category") orelse "core";
         const category = MemoryCategory.fromString(category_str);
 
         const m = self.memory orelse {
@@ -87,7 +88,9 @@ test "memory_store schema has key and content" {
 test "memory_store executes without backend" {
     var mt = MemoryStoreTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"lang\", \"content\": \"Prefers Zig\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"lang\", \"content\": \"Prefers Zig\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "not configured") != null);
@@ -97,14 +100,18 @@ test "memory_store executes without backend" {
 test "memory_store missing key" {
     var mt = MemoryStoreTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"content\": \"no key\"}");
+    const parsed = try root.parseTestArgs("{\"content\": \"no key\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
 test "memory_store missing content" {
     var mt = MemoryStoreTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"no_content\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"no_content\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
@@ -115,7 +122,9 @@ test "memory_store with real backend" {
 
     var mt = MemoryStoreTool{ .memory = backend.memory() };
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"lang\", \"content\": \"Prefers Zig\", \"category\": \"core\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"lang\", \"content\": \"Prefers Zig\", \"category\": \"core\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Stored memory: lang") != null);
@@ -129,7 +138,9 @@ test "memory_store default category is core" {
 
     var mt = MemoryStoreTool{ .memory = backend.memory() };
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"test\", \"content\": \"value\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"test\", \"content\": \"value\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "core") != null);
@@ -142,7 +153,9 @@ test "memory_store with daily category" {
 
     var mt = MemoryStoreTool{ .memory = backend.memory() };
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"note\", \"content\": \"today's note\", \"category\": \"daily\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"note\", \"content\": \"today's note\", \"category\": \"daily\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "daily") != null);

@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const cron = @import("../cron.zig");
 const CronScheduler = cron.CronScheduler;
 const loadScheduler = @import("cron_add.zig").loadScheduler;
@@ -22,9 +23,9 @@ pub const CronRunTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *CronRunTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -41,8 +42,8 @@ pub const CronRunTool = struct {
         ;
     }
 
-    fn execute(_: *CronRunTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const job_id = parseStringField(args_json, "job_id") orelse
+    fn execute(_: *CronRunTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const job_id = root.getString(args, "job_id") orelse
             return ToolResult.fail("Missing 'job_id' parameter");
 
         var scheduler = loadScheduler(allocator) catch {
@@ -125,7 +126,9 @@ test "cron_run schema has job_id" {
 test "cron_run_requires_job_id" {
     var crt = CronRunTool{};
     const t = crt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "job_id") != null);
 }
@@ -133,7 +136,9 @@ test "cron_run_requires_job_id" {
 test "cron_run_not_found" {
     var crt = CronRunTool{};
     const t = crt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"job_id\": \"nonexistent-xyz\"}");
+    const parsed = try root.parseTestArgs("{\"job_id\": \"nonexistent-xyz\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not found") != null);
@@ -156,8 +161,10 @@ test "cron_run_executes_command" {
     const t = crt.tool();
     const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"job_id\": \"{s}\"}}", .{job_id});
     defer std.testing.allocator.free(args);
+    const parsed = try root.parseTestArgs(args);
+    defer parsed.deinit();
 
-    const result = try t.execute(std.testing.allocator, args);
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
 

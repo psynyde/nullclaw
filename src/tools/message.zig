@@ -5,9 +5,10 @@
 //! subagent announcements.
 
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const bus = @import("../bus.zig");
 
 /// Message tool — sends a message to a specific channel/chat via the bus.
@@ -35,9 +36,9 @@ pub const MessageTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *MessageTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -66,18 +67,18 @@ pub const MessageTool = struct {
         return self.sent_in_round;
     }
 
-    fn execute(self: *MessageTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const content = parseStringField(args_json, "content") orelse
+    fn execute(self: *MessageTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const content = root.getString(args, "content") orelse
             return ToolResult.fail("Missing required 'content' parameter");
 
         if (std.mem.trim(u8, content, " \t\n\r").len == 0)
             return ToolResult.fail("'content' must not be empty");
 
-        const channel = parseStringField(args_json, "channel") orelse
+        const channel = root.getString(args, "channel") orelse
             (self.default_channel orelse
                 return ToolResult.fail("No channel specified and no default channel set"));
 
-        const chat_id = parseStringField(args_json, "chat_id") orelse
+        const chat_id = root.getString(args, "chat_id") orelse
             (self.default_chat_id orelse
                 return ToolResult.fail("No chat_id specified and no default chat_id set"));
 
@@ -120,7 +121,9 @@ test "MessageTool name and description" {
 
 test "MessageTool execute without bus fails" {
     var mt = MessageTool{};
-    const result = try mt.execute(testing.allocator, "{\"content\":\"hello\",\"channel\":\"tg\",\"chat_id\":\"c1\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"hello\",\"channel\":\"tg\",\"chat_id\":\"c1\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Message tool not connected to event bus", result.error_msg.?);
 }
@@ -129,7 +132,9 @@ test "MessageTool execute without content fails" {
     var event_bus = bus.Bus.init();
     defer event_bus.close();
     var mt = MessageTool{ .event_bus = &event_bus };
-    const result = try mt.execute(testing.allocator, "{\"channel\":\"tg\",\"chat_id\":\"c1\"}");
+    const parsed = try root.parseTestArgs("{\"channel\":\"tg\",\"chat_id\":\"c1\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Missing required 'content' parameter", result.error_msg.?);
 }
@@ -138,7 +143,9 @@ test "MessageTool execute with empty content fails" {
     var event_bus = bus.Bus.init();
     defer event_bus.close();
     var mt = MessageTool{ .event_bus = &event_bus };
-    const result = try mt.execute(testing.allocator, "{\"content\":\"  \",\"channel\":\"tg\",\"chat_id\":\"c1\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"  \",\"channel\":\"tg\",\"chat_id\":\"c1\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("'content' must not be empty", result.error_msg.?);
 }
@@ -151,7 +158,9 @@ test "MessageTool execute without channel uses default" {
         .default_channel = "telegram",
         .default_chat_id = "chat42",
     };
-    const result = try mt.execute(testing.allocator, "{\"content\":\"hello\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"hello\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(result.success);
     try testing.expect(std.mem.indexOf(u8, result.output, "telegram") != null);
     // Free the allocated output
@@ -170,7 +179,9 @@ test "MessageTool execute with explicit channel overrides default" {
         .default_channel = "telegram",
         .default_chat_id = "chat42",
     };
-    const result = try mt.execute(testing.allocator, "{\"content\":\"hi\",\"channel\":\"discord\",\"chat_id\":\"room1\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"hi\",\"channel\":\"discord\",\"chat_id\":\"room1\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(result.success);
     try testing.expect(std.mem.indexOf(u8, result.output, "discord") != null);
     testing.allocator.free(result.output);
@@ -202,7 +213,9 @@ test "MessageTool sent_in_round is set after successful send" {
     };
 
     try testing.expect(!mt.hasMessageBeenSent());
-    const result = try mt.execute(testing.allocator, "{\"content\":\"ping\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"ping\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(result.success);
     testing.allocator.free(result.output);
     try testing.expect(mt.hasMessageBeenSent());
@@ -220,7 +233,9 @@ test "MessageTool no channel and no default fails" {
     var event_bus = bus.Bus.init();
     defer event_bus.close();
     var mt = MessageTool{ .event_bus = &event_bus };
-    const result = try mt.execute(testing.allocator, "{\"content\":\"hello\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"hello\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("No channel specified and no default channel set", result.error_msg.?);
 }
@@ -233,7 +248,9 @@ test "MessageTool closed bus fails gracefully" {
         .default_channel = "tg",
         .default_chat_id = "c1",
     };
-    const result = try mt.execute(testing.allocator, "{\"content\":\"hello\"}");
+    const parsed = try root.parseTestArgs("{\"content\":\"hello\"}");
+    defer parsed.deinit();
+    const result = try mt.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Bus is closed, cannot send message", result.error_msg.?);
 }

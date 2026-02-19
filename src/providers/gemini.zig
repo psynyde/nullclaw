@@ -375,11 +375,11 @@ pub const GeminiProvider = struct {
         defer allocator.free(body);
 
         const resp_body = if (auth.isApiKey())
-            root.curlPost(allocator, url, body, &.{}) catch return error.GeminiApiError
+            root.curlPostTimed(allocator, url, body, &.{}, request.timeout_secs) catch return error.GeminiApiError
         else blk: {
             var auth_hdr_buf: [512]u8 = undefined;
             const auth_hdr = std.fmt.bufPrint(&auth_hdr_buf, "Authorization: Bearer {s}", .{auth.credential()}) catch return error.GeminiApiError;
-            break :blk root.curlPost(allocator, url, body, &.{auth_hdr}) catch return error.GeminiApiError;
+            break :blk root.curlPostTimed(allocator, url, body, &.{auth_hdr}, request.timeout_secs) catch return error.GeminiApiError;
         };
         defer allocator.free(resp_body);
 

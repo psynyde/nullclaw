@@ -1,8 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
-const parseIntField = @import("shell.zig").parseIntField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// RAM base for STM32F401 Nucleo boards.
 const NUCLEO_RAM_BASE: u64 = 0x2000_0000;
@@ -29,9 +29,9 @@ pub const HardwareMemoryTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *HardwareMemoryTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -50,15 +50,15 @@ pub const HardwareMemoryTool = struct {
         ;
     }
 
-    fn execute(self: *HardwareMemoryTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn execute(self: *HardwareMemoryTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         if (self.boards.len == 0) {
             return ToolResult.fail("No peripherals configured. Add boards to config.toml [peripherals.boards].");
         }
 
-        const action = parseStringField(args_json, "action") orelse
+        const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter (read or write)");
 
-        const board = parseStringField(args_json, "board") orelse
+        const board = root.getString(args, "board") orelse
             (if (self.boards.len > 0) self.boards[0] else "unknown");
 
         // Validate board is a supported type
@@ -67,15 +67,15 @@ pub const HardwareMemoryTool = struct {
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         };
 
-        const address_str = parseStringField(args_json, "address") orelse "0x20000000";
+        const address_str = root.getString(args, "address") orelse "0x20000000";
         const address = parseHexAddress(address_str) orelse NUCLEO_RAM_BASE;
 
         if (std.mem.eql(u8, action, "read")) {
-            const length_raw = parseIntField(args_json, "length") orelse 128;
+            const length_raw = root.getInt(args, "length") orelse 128;
             const length: usize = @intCast(@min(@max(length_raw, 1), 256));
             return probeRead(allocator, chip, address, length);
         } else if (std.mem.eql(u8, action, "write")) {
-            const value = parseStringField(args_json, "value") orelse
+            const value = root.getString(args, "value") orelse
                 return ToolResult.fail("Missing 'value' parameter for write action");
             return probeWrite(allocator, chip, address, value);
         } else {
@@ -237,7 +237,9 @@ test "hardware_memory schema has action" {
 test "hardware_memory no boards returns error" {
     var hm = HardwareMemoryTool{ .boards = &.{} };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"read\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"read\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "peripherals") != null);
 }
@@ -246,7 +248,9 @@ test "hardware_memory missing action returns error" {
     const boards = [_][]const u8{"nucleo-f401re"};
     var hm = HardwareMemoryTool{ .boards = &boards };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "action") != null);
 }
@@ -255,7 +259,9 @@ test "hardware_memory unsupported board" {
     const boards = [_][]const u8{"esp32"};
     var hm = HardwareMemoryTool{ .boards = &boards };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"read\", \"board\": \"esp32\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"read\", \"board\": \"esp32\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "nucleo") != null);
@@ -265,7 +271,9 @@ test "hardware_memory read without probe-rs" {
     const boards = [_][]const u8{"nucleo-f401re"};
     var hm = HardwareMemoryTool{ .boards = &boards };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"read\", \"address\": \"0x20000000\", \"length\": 64}");
+    const parsed = try root.parseTestArgs("{\"action\": \"read\", \"address\": \"0x20000000\", \"length\": 64}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // Only free heap-allocated output/error_msg (probe-rs failure returns a
     // heap-allocated error when the command runs but fails, or allocPrint output
     // on success; ToolResult.fail() returns a string literal that must NOT be freed).
@@ -289,7 +297,9 @@ test "hardware_memory write without probe-rs" {
     const boards = [_][]const u8{"nucleo-f401re"};
     var hm = HardwareMemoryTool{ .boards = &boards };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"write\", \"address\": \"0x20000000\", \"value\": \"DEADBEEF\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"write\", \"address\": \"0x20000000\", \"value\": \"DEADBEEF\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     const has_probe = probeRsAvailable(std.testing.allocator);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     defer if (has_probe) {
@@ -309,7 +319,9 @@ test "hardware_memory write missing value" {
     const boards = [_][]const u8{"nucleo-f401re"};
     var hm = HardwareMemoryTool{ .boards = &boards };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"write\", \"address\": \"0x20000000\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"write\", \"address\": \"0x20000000\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "value") != null);
 }
@@ -318,7 +330,9 @@ test "hardware_memory unknown action" {
     const boards = [_][]const u8{"nucleo-f401re"};
     var hm = HardwareMemoryTool{ .boards = &boards };
     const t = hm.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\": \"delete\"}");
+    const parsed = try root.parseTestArgs("{\"action\": \"delete\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
 }

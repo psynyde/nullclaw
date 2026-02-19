@@ -4,9 +4,10 @@
 //! and navigation. Preserves headings, links, and lists.
 
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const net_security = @import("../root.zig").net_security;
 
 /// Default max chars for extracted content.
@@ -30,9 +31,9 @@ pub const WebFetchTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *WebFetchTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -49,8 +50,8 @@ pub const WebFetchTool = struct {
         ;
     }
 
-    fn execute(self: *WebFetchTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const url = parseStringField(args_json, "url") orelse
+    fn execute(self: *WebFetchTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const url = root.getString(args, "url") orelse
             return ToolResult.fail("Missing required 'url' parameter");
 
         // Validate URL scheme
@@ -64,7 +65,7 @@ pub const WebFetchTool = struct {
         if (net_security.isLocalHost(host))
             return ToolResult.fail("Blocked local/private host");
 
-        const max_chars = parseMaxCharsWithDefault(args_json, self.default_max_chars);
+        const max_chars = parseMaxCharsWithDefault(args, self.default_max_chars);
 
         // Fetch URL
         var client: std.http.Client = .{ .allocator = allocator };
@@ -128,16 +129,15 @@ pub const WebFetchTool = struct {
     }
 };
 
-fn parseMaxChars(json: []const u8) usize {
-    return parseMaxCharsWithDefault(json, DEFAULT_MAX_CHARS);
+fn parseMaxChars(args: JsonObjectMap) usize {
+    return parseMaxCharsWithDefault(args, DEFAULT_MAX_CHARS);
 }
 
-fn parseMaxCharsWithDefault(json: []const u8, default: usize) usize {
-    const s = parseStringField(json, "max_chars") orelse return default;
-    const val = std.fmt.parseInt(usize, s, 10) catch return default;
-    if (val < 100) return 100;
-    if (val > 200_000) return 200_000;
-    return val;
+fn parseMaxCharsWithDefault(args: JsonObjectMap, default: usize) usize {
+    const val_i64 = root.getInt(args, "max_chars") orelse return default;
+    if (val_i64 < 100) return 100;
+    if (val_i64 > 200_000) return 200_000;
+    return @intCast(val_i64);
 }
 
 /// Convert HTML to readable text with basic markdown formatting.
@@ -425,32 +425,44 @@ test "WebFetchTool name and description" {
 
 test "WebFetchTool missing url fails" {
     var wft = WebFetchTool{};
-    const result = try wft.execute(testing.allocator, "{\"max_chars\":1000}");
+    const parsed = try root.parseTestArgs("{\"max_chars\":1000}");
+    defer parsed.deinit();
+    const result = try wft.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Missing required 'url' parameter", result.error_msg.?);
 }
 
 test "WebFetchTool non-http url fails" {
     var wft = WebFetchTool{};
-    const result = try wft.execute(testing.allocator, "{\"url\":\"ftp://example.com\"}");
+    const parsed = try root.parseTestArgs("{\"url\":\"ftp://example.com\"}");
+    defer parsed.deinit();
+    const result = try wft.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Only http:// and https:// URLs are allowed", result.error_msg.?);
 }
 
 test "WebFetchTool localhost blocked" {
     var wft = WebFetchTool{};
-    const result = try wft.execute(testing.allocator, "{\"url\":\"http://localhost:8080/api\"}");
+    const parsed = try root.parseTestArgs("{\"url\":\"http://localhost:8080/api\"}");
+    defer parsed.deinit();
+    const result = try wft.execute(testing.allocator, parsed.value.object);
     try testing.expect(!result.success);
     try testing.expectEqualStrings("Blocked local/private host", result.error_msg.?);
 }
 
 test "WebFetchTool private IP blocked" {
     var wft = WebFetchTool{};
-    const r1 = try wft.execute(testing.allocator, "{\"url\":\"http://192.168.1.1/\"}");
+    const p1 = try root.parseTestArgs("{\"url\":\"http://192.168.1.1/\"}");
+    defer p1.deinit();
+    const r1 = try wft.execute(testing.allocator, p1.value.object);
     try testing.expect(!r1.success);
-    const r2 = try wft.execute(testing.allocator, "{\"url\":\"http://10.0.0.1/\"}");
+    const p2 = try root.parseTestArgs("{\"url\":\"http://10.0.0.1/\"}");
+    defer p2.deinit();
+    const r2 = try wft.execute(testing.allocator, p2.value.object);
     try testing.expect(!r2.success);
-    const r3 = try wft.execute(testing.allocator, "{\"url\":\"http://127.0.0.1/\"}");
+    const p3 = try root.parseTestArgs("{\"url\":\"http://127.0.0.1/\"}");
+    defer p3.deinit();
+    const r3 = try wft.execute(testing.allocator, p3.value.object);
     try testing.expect(!r3.success);
 }
 
@@ -540,10 +552,18 @@ test "isLocalHost detects private ranges" {
 }
 
 test "parseMaxChars" {
-    try testing.expectEqual(DEFAULT_MAX_CHARS, parseMaxChars("{}"));
-    try testing.expectEqual(@as(usize, 1000), parseMaxChars("{\"max_chars\":\"1000\"}"));
-    try testing.expectEqual(@as(usize, 100), parseMaxChars("{\"max_chars\":\"10\"}")); // clamped
-    try testing.expectEqual(@as(usize, 200_000), parseMaxChars("{\"max_chars\":\"999999\"}")); // clamped
+    const p1 = try root.parseTestArgs("{}");
+    defer p1.deinit();
+    try testing.expectEqual(DEFAULT_MAX_CHARS, parseMaxChars(p1.value.object));
+    const p2 = try root.parseTestArgs("{\"max_chars\":1000}");
+    defer p2.deinit();
+    try testing.expectEqual(@as(usize, 1000), parseMaxChars(p2.value.object));
+    const p3 = try root.parseTestArgs("{\"max_chars\":10}");
+    defer p3.deinit();
+    try testing.expectEqual(@as(usize, 100), parseMaxChars(p3.value.object)); // clamped
+    const p4 = try root.parseTestArgs("{\"max_chars\":999999}");
+    defer p4.deinit();
+    try testing.expectEqual(@as(usize, 200_000), parseMaxChars(p4.value.object)); // clamped
 }
 
 test "decodeEntity" {

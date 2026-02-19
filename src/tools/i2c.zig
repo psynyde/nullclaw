@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
-const parseIntField = @import("shell.zig").parseIntField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// Linux I2C ioctl constants.
 const I2C_SLAVE = 0x0703;
@@ -30,9 +30,9 @@ pub const I2cTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         _ = ptr;
-        return execute(allocator, args_json);
+        return execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -50,18 +50,18 @@ pub const I2cTool = struct {
         ;
     }
 
-    fn execute(allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const action = parseStringField(args_json, "action") orelse
+    fn execute(allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
         if (std.mem.eql(u8, action, "detect")) {
             return actionDetect(allocator);
         } else if (std.mem.eql(u8, action, "scan")) {
-            return actionScan(allocator, args_json);
+            return actionScan(allocator, args);
         } else if (std.mem.eql(u8, action, "read")) {
-            return actionRead(allocator, args_json);
+            return actionRead(allocator, args);
         } else if (std.mem.eql(u8, action, "write")) {
-            return actionWrite(allocator, args_json);
+            return actionWrite(allocator, args);
         } else {
             return ToolResult.fail("Unknown action. Use: detect, scan, read, write");
         }
@@ -76,46 +76,46 @@ pub const I2cTool = struct {
         return detectLinux(allocator);
     }
 
-    fn actionScan(allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn actionScan(allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         if (comptime builtin.os.tag != .linux) {
             return platformError(allocator);
         }
-        const bus = parseIntField(args_json, "bus") orelse
+        const bus = root.getInt(args, "bus") orelse
             return ToolResult.fail("Missing 'bus' parameter for scan");
         if (bus < 0) return ToolResult.fail("Bus number must be non-negative");
         return scanLinux(allocator, @intCast(bus));
     }
 
-    fn actionRead(allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn actionRead(allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         if (comptime builtin.os.tag != .linux) {
             return platformError(allocator);
         }
-        const bus = parseIntField(args_json, "bus") orelse
+        const bus = root.getInt(args, "bus") orelse
             return ToolResult.fail("Missing 'bus' parameter for read");
         if (bus < 0) return ToolResult.fail("Bus number must be non-negative");
-        const addr = parseAddress(args_json) orelse
+        const addr = parseAddress(args) orelse
             return ToolResult.fail("Missing or invalid 'address' (hex 0x03-0x77)");
-        const register = parseIntField(args_json, "register") orelse
+        const register = root.getInt(args, "register") orelse
             return ToolResult.fail("Missing 'register' parameter for read");
         if (register < 0 or register > 255) return ToolResult.fail("Register must be 0-255");
-        const length = parseIntField(args_json, "length") orelse 1;
+        const length = root.getInt(args, "length") orelse 1;
         if (length < 1 or length > 32) return ToolResult.fail("Length must be 1-32");
         return readLinux(allocator, @intCast(bus), addr, @intCast(register), @intCast(length));
     }
 
-    fn actionWrite(allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
+    fn actionWrite(allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         if (comptime builtin.os.tag != .linux) {
             return platformError(allocator);
         }
-        const bus = parseIntField(args_json, "bus") orelse
+        const bus = root.getInt(args, "bus") orelse
             return ToolResult.fail("Missing 'bus' parameter for write");
         if (bus < 0) return ToolResult.fail("Bus number must be non-negative");
-        const addr = parseAddress(args_json) orelse
+        const addr = parseAddress(args) orelse
             return ToolResult.fail("Missing or invalid 'address' (hex 0x03-0x77)");
-        const register = parseIntField(args_json, "register") orelse
+        const register = root.getInt(args, "register") orelse
             return ToolResult.fail("Missing 'register' parameter for write");
         if (register < 0 or register > 255) return ToolResult.fail("Register must be 0-255");
-        const value = parseIntField(args_json, "value") orelse
+        const value = root.getInt(args, "value") orelse
             return ToolResult.fail("Missing 'value' parameter for write");
         if (value < 0 or value > 255) return ToolResult.fail("Value must be 0-255");
         return writeLinux(allocator, @intCast(bus), addr, @intCast(register), @intCast(value));
@@ -285,8 +285,8 @@ pub const I2cTool = struct {
 };
 
 /// Parse hex address string (e.g. "0x48") and validate range 0x03-0x77.
-pub fn parseAddress(args_json: []const u8) ?u7 {
-    const addr_str = parseStringField(args_json, "address") orelse return null;
+pub fn parseAddress(args: JsonObjectMap) ?u7 {
+    const addr_str = root.getString(args, "address") orelse return null;
     const hex = if (std.mem.startsWith(u8, addr_str, "0x") or std.mem.startsWith(u8, addr_str, "0X"))
         addr_str[2..]
     else
@@ -325,7 +325,9 @@ test "i2c detect on non-linux returns platform error" {
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
     var it: I2cTool = .{};
     const t = it.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\":\"detect\"}");
+    const parsed = try root.parseTestArgs("{\"action\":\"detect\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not supported") != null);
@@ -335,7 +337,9 @@ test "i2c scan on non-linux returns platform error" {
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
     var it: I2cTool = .{};
     const t = it.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\":\"scan\",\"bus\":1}");
+    const parsed = try root.parseTestArgs("{\"action\":\"scan\",\"bus\":1}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not supported") != null);
@@ -345,7 +349,9 @@ test "i2c read on non-linux returns platform error" {
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
     var it: I2cTool = .{};
     const t = it.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\":\"read\",\"bus\":1,\"address\":\"0x48\",\"register\":0}");
+    const parsed = try root.parseTestArgs("{\"action\":\"read\",\"bus\":1,\"address\":\"0x48\",\"register\":0}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not supported") != null);
@@ -355,7 +361,9 @@ test "i2c write on non-linux returns platform error" {
     if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
     var it: I2cTool = .{};
     const t = it.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\":\"write\",\"bus\":1,\"address\":\"0x48\",\"register\":0,\"value\":42}");
+    const parsed = try root.parseTestArgs("{\"action\":\"write\",\"bus\":1,\"address\":\"0x48\",\"register\":0,\"value\":42}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "not supported") != null);
@@ -364,7 +372,9 @@ test "i2c write on non-linux returns platform error" {
 test "i2c missing action parameter" {
     var it: I2cTool = .{};
     const t = it.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "action") != null);
 }
@@ -372,31 +382,59 @@ test "i2c missing action parameter" {
 test "i2c unknown action" {
     var it: I2cTool = .{};
     const t = it.tool();
-    const result = try t.execute(std.testing.allocator, "{\"action\":\"reset\"}");
+    const parsed = try root.parseTestArgs("{\"action\":\"reset\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "Unknown action") != null);
 }
 
 test "parseAddress valid hex" {
-    try std.testing.expectEqual(@as(?u7, 0x48), parseAddress("{\"address\":\"0x48\"}"));
-    try std.testing.expectEqual(@as(?u7, 0x03), parseAddress("{\"address\":\"0x03\"}"));
-    try std.testing.expectEqual(@as(?u7, 0x77), parseAddress("{\"address\":\"0x77\"}"));
-    try std.testing.expectEqual(@as(?u7, 0x50), parseAddress("{\"address\":\"0X50\"}"));
-    try std.testing.expectEqual(@as(?u7, 0x20), parseAddress("{\"address\":\"20\"}")); // no prefix
+    const p1 = try root.parseTestArgs("{\"address\":\"0x48\"}");
+    defer p1.deinit();
+    try std.testing.expectEqual(@as(?u7, 0x48), parseAddress(p1.value.object));
+    const p2 = try root.parseTestArgs("{\"address\":\"0x03\"}");
+    defer p2.deinit();
+    try std.testing.expectEqual(@as(?u7, 0x03), parseAddress(p2.value.object));
+    const p3 = try root.parseTestArgs("{\"address\":\"0x77\"}");
+    defer p3.deinit();
+    try std.testing.expectEqual(@as(?u7, 0x77), parseAddress(p3.value.object));
+    const p4 = try root.parseTestArgs("{\"address\":\"0X50\"}");
+    defer p4.deinit();
+    try std.testing.expectEqual(@as(?u7, 0x50), parseAddress(p4.value.object));
+    const p5 = try root.parseTestArgs("{\"address\":\"20\"}");
+    defer p5.deinit();
+    try std.testing.expectEqual(@as(?u7, 0x20), parseAddress(p5.value.object)); // no prefix
 }
 
 test "parseAddress rejects out of range" {
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"0x00\"}"));
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"0x01\"}"));
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"0x02\"}"));
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"0x78\"}"));
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"0xFF\"}"));
+    const p1 = try root.parseTestArgs("{\"address\":\"0x00\"}");
+    defer p1.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p1.value.object));
+    const p2 = try root.parseTestArgs("{\"address\":\"0x01\"}");
+    defer p2.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p2.value.object));
+    const p3 = try root.parseTestArgs("{\"address\":\"0x02\"}");
+    defer p3.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p3.value.object));
+    const p4 = try root.parseTestArgs("{\"address\":\"0x78\"}");
+    defer p4.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p4.value.object));
+    const p5 = try root.parseTestArgs("{\"address\":\"0xFF\"}");
+    defer p5.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p5.value.object));
 }
 
 test "parseAddress rejects invalid" {
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"\"}"));
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{\"address\":\"zz\"}"));
-    try std.testing.expectEqual(@as(?u7, null), parseAddress("{}"));
+    const p1 = try root.parseTestArgs("{\"address\":\"\"}");
+    defer p1.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p1.value.object));
+    const p2 = try root.parseTestArgs("{\"address\":\"zz\"}");
+    defer p2.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p2.value.object));
+    const p3 = try root.parseTestArgs("{}");
+    defer p3.deinit();
+    try std.testing.expectEqual(@as(?u7, null), parseAddress(p3.value.object));
 }
 
 test "i2c scan missing bus parameter" {
@@ -405,7 +443,9 @@ test "i2c scan missing bus parameter" {
     const t = it.tool();
     // On non-Linux, the platform error fires before bus check (comptime).
     // Test that it doesn't crash.
-    const result = try t.execute(std.testing.allocator, "{\"action\":\"scan\"}");
+    const parsed = try root.parseTestArgs("{\"action\":\"scan\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.error_msg) |e| std.testing.allocator.free(e);
     try std.testing.expect(!result.success);
 }

@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const SubagentManager = @import("../subagent.zig").SubagentManager;
 
 /// Spawn tool — launches a background subagent to work on a task asynchronously.
@@ -25,9 +26,9 @@ pub const SpawnTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *SpawnTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -44,8 +45,8 @@ pub const SpawnTool = struct {
         ;
     }
 
-    fn execute(self: *SpawnTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const task = parseStringField(args_json, "task") orelse
+    fn execute(self: *SpawnTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const task = root.getString(args, "task") orelse
             return ToolResult.fail("Missing 'task' parameter");
 
         const trimmed_task = std.mem.trim(u8, task, " \t\n");
@@ -53,7 +54,7 @@ pub const SpawnTool = struct {
             return ToolResult.fail("'task' must not be empty");
         }
 
-        const label = parseStringField(args_json, "label") orelse "subagent";
+        const label = root.getString(args, "label") orelse "subagent";
 
         const manager = self.manager orelse
             return ToolResult.fail("Spawn tool not connected to SubagentManager");
@@ -104,7 +105,9 @@ test "spawn tool schema has task" {
 test "spawn missing task parameter" {
     var st = SpawnTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"label\": \"test\"}");
+    const parsed = try root.parseTestArgs("{\"label\": \"test\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "task") != null);
 }
@@ -112,7 +115,9 @@ test "spawn missing task parameter" {
 test "spawn empty task rejected" {
     var st = SpawnTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"task\": \"  \"}");
+    const parsed = try root.parseTestArgs("{\"task\": \"  \"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "empty") != null);
 }
@@ -120,7 +125,9 @@ test "spawn empty task rejected" {
 test "spawn without manager fails" {
     var st = SpawnTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{\"task\": \"do something\"}");
+    const parsed = try root.parseTestArgs("{\"task\": \"do something\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "SubagentManager") != null);
 }
@@ -128,6 +135,8 @@ test "spawn without manager fails" {
 test "spawn empty JSON rejected" {
     var st = SpawnTool{};
     const t = st.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }

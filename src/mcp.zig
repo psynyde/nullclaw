@@ -294,8 +294,13 @@ pub const McpToolWrapper = struct {
         return .{ .ptr = @ptrCast(self), .vtable = &vtable };
     }
 
-    fn executeImpl(ptr: *anyopaque, allocator: Allocator, args_json: []const u8) anyerror!tools_mod.ToolResult {
+    fn executeImpl(ptr: *anyopaque, allocator: Allocator, args: tools_mod.JsonObjectMap) anyerror!tools_mod.ToolResult {
         const self: *McpToolWrapper = @ptrCast(@alignCast(ptr));
+        // Re-serialize ObjectMap to JSON string for MCP protocol
+        const json_val = std.json.Value{ .object = args };
+        const args_json = std.json.Stringify.valueAlloc(allocator, json_val, .{}) catch
+            return tools_mod.ToolResult.fail("Failed to serialize tool arguments");
+        defer allocator.free(args_json);
         const output = self.server.callTool(self.original_name, args_json) catch |err| {
             const msg = std.fmt.allocPrint(allocator, "MCP tool '{s}' failed: {}", .{ self.original_name, err }) catch
                 return tools_mod.ToolResult.fail("MCP tool call failed");

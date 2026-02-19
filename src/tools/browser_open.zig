@@ -1,8 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// Browser open tool — opens an approved HTTPS URL in the default browser.
 /// macOS: `open URL`
@@ -25,9 +26,9 @@ pub const BrowserOpenTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *BrowserOpenTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -44,8 +45,8 @@ pub const BrowserOpenTool = struct {
         ;
     }
 
-    fn execute(self: *BrowserOpenTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const url = parseStringField(args_json, "url") orelse
+    fn execute(self: *BrowserOpenTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const url = root.getString(args, "url") orelse
             return ToolResult.fail("Missing 'url' parameter");
 
         // Validate URL
@@ -168,7 +169,9 @@ test "browser_open missing url returns error" {
     const domains = [_][]const u8{"example.com"};
     var bo = BrowserOpenTool{ .allowed_domains = &domains };
     const t = bo.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(result.error_msg != null);
 }
@@ -177,7 +180,9 @@ test "browser_open rejects http" {
     const domains = [_][]const u8{"example.com"};
     var bo = BrowserOpenTool{ .allowed_domains = &domains };
     const t = bo.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"http://example.com\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"http://example.com\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "https") != null);
 }
@@ -185,7 +190,9 @@ test "browser_open rejects http" {
 test "browser_open rejects empty allowlist" {
     var bo = BrowserOpenTool{ .allowed_domains = &.{} };
     const t = bo.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"https://example.com\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"https://example.com\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "allowed_domains") != null);
 }
@@ -194,7 +201,9 @@ test "browser_open rejects non-allowlisted domain" {
     const domains = [_][]const u8{"example.com"};
     var bo = BrowserOpenTool{ .allowed_domains = &domains };
     const t = bo.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"https://evil.com/path\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"https://evil.com/path\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "allowed_domains") != null);
 }
@@ -203,7 +212,9 @@ test "browser_open rejects localhost" {
     const domains = [_][]const u8{"localhost"};
     var bo = BrowserOpenTool{ .allowed_domains = &domains };
     const t = bo.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"https://localhost:8080/api\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"https://localhost:8080/api\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "local") != null or std.mem.indexOf(u8, result.error_msg.?, "private") != null);
 }
@@ -212,7 +223,9 @@ test "browser_open rejects private ip" {
     const domains = [_][]const u8{"192.168.1.1"};
     var bo = BrowserOpenTool{ .allowed_domains = &domains };
     const t = bo.tool();
-    const result = try t.execute(std.testing.allocator, "{\"url\": \"https://192.168.1.1\"}");
+    const parsed = try root.parseTestArgs("{\"url\": \"https://192.168.1.1\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 

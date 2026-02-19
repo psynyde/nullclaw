@@ -1,8 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 /// Screenshot tool — capture the screen using platform-native commands.
 /// macOS: `screencapture -x FILE`
@@ -24,9 +25,9 @@ pub const ScreenshotTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *ScreenshotTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -43,8 +44,8 @@ pub const ScreenshotTool = struct {
         ;
     }
 
-    fn execute(self: *ScreenshotTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const filename = parseStringField(args_json, "filename") orelse "screenshot.png";
+    fn execute(self: *ScreenshotTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const filename = root.getString(args, "filename") orelse "screenshot.png";
 
         // Build output path: workspace_dir/filename
         const output_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ self.workspace_dir, filename });
@@ -112,7 +113,9 @@ test "screenshot tool schema has filename" {
 test "screenshot execute returns mock in test mode" {
     const allocator = std.testing.allocator;
     var st = ScreenshotTool{ .workspace_dir = "/tmp/workspace" };
-    const result = try st.execute(allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try st.execute(allocator, parsed.value.object);
     defer allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "[IMAGE:") != null);
@@ -122,7 +125,9 @@ test "screenshot execute returns mock in test mode" {
 test "screenshot execute with custom filename" {
     const allocator = std.testing.allocator;
     var st = ScreenshotTool{ .workspace_dir = "/tmp" };
-    const result = try st.execute(allocator, "{\"filename\":\"capture.png\"}");
+    const parsed = try root.parseTestArgs("{\"filename\":\"capture.png\"}");
+    defer parsed.deinit();
+    const result = try st.execute(allocator, parsed.value.object);
     defer allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "capture.png") != null);

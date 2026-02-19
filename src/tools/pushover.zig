@@ -1,8 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
-const parseIntField = @import("shell.zig").parseIntField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 
 const PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json";
 
@@ -27,9 +27,9 @@ pub const PushoverTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *PushoverTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -46,18 +46,18 @@ pub const PushoverTool = struct {
         ;
     }
 
-    fn execute(self: *PushoverTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const message = parseStringField(args_json, "message") orelse
+    fn execute(self: *PushoverTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const message = root.getString(args, "message") orelse
             return ToolResult.fail("Missing required 'message' parameter");
 
         if (message.len == 0)
             return ToolResult.fail("Missing required 'message' parameter");
 
-        const title = parseStringField(args_json, "title");
-        const sound = parseStringField(args_json, "sound");
+        const title = root.getString(args, "title");
+        const sound = root.getString(args, "sound");
 
         // Validate priority if provided
-        const priority = parseIntField(args_json, "priority");
+        const priority = root.getInt(args, "priority");
         if (priority) |p| {
             if (p < -2 or p > 2) {
                 return ToolResult.fail("Invalid 'priority': expected integer in range -2..=2");
@@ -205,7 +205,9 @@ test "pushover schema has message required" {
 test "pushover execute missing message" {
     var pt = PushoverTool{ .workspace_dir = "/tmp", .allocator = std.testing.allocator };
     const t = pt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "message") != null);
 }
@@ -213,7 +215,9 @@ test "pushover execute missing message" {
 test "pushover execute empty message" {
     var pt = PushoverTool{ .workspace_dir = "/tmp", .allocator = std.testing.allocator };
     const t = pt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"message\": \"\"}");
+    const parsed = try root.parseTestArgs("{\"message\": \"\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "message") != null);
 }
@@ -221,7 +225,9 @@ test "pushover execute empty message" {
 test "pushover priority -3 rejected" {
     var pt = PushoverTool{ .workspace_dir = "/tmp", .allocator = std.testing.allocator };
     const t = pt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"message\": \"hello\", \"priority\": -3}");
+    const parsed = try root.parseTestArgs("{\"message\": \"hello\", \"priority\": -3}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "priority") != null or
         std.mem.indexOf(u8, result.error_msg.?, "-2..=2") != null);
@@ -230,7 +236,9 @@ test "pushover priority -3 rejected" {
 test "pushover priority 5 rejected" {
     var pt = PushoverTool{ .workspace_dir = "/tmp", .allocator = std.testing.allocator };
     const t = pt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"message\": \"hello\", \"priority\": 5}");
+    const parsed = try root.parseTestArgs("{\"message\": \"hello\", \"priority\": 5}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "priority") != null or
         std.mem.indexOf(u8, result.error_msg.?, "-2..=2") != null);
@@ -239,7 +247,9 @@ test "pushover priority 5 rejected" {
 test "pushover priority 2 accepted (credential error expected)" {
     var pt = PushoverTool{ .workspace_dir = "/tmp/nonexistent_pushover_test_dir", .allocator = std.testing.allocator };
     const t = pt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"message\": \"hello\", \"priority\": 2}");
+    const parsed = try root.parseTestArgs("{\"message\": \"hello\", \"priority\": 2}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     // Should fail on credentials, not on priority validation
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "priority") == null);
@@ -249,7 +259,9 @@ test "pushover priority 2 accepted (credential error expected)" {
 test "pushover priority -2 accepted (credential error expected)" {
     var pt = PushoverTool{ .workspace_dir = "/tmp/nonexistent_pushover_test_dir", .allocator = std.testing.allocator };
     const t = pt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"message\": \"hello\", \"priority\": -2}");
+    const parsed = try root.parseTestArgs("{\"message\": \"hello\", \"priority\": -2}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "priority") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "credential") != null);

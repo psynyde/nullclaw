@@ -1,7 +1,8 @@
 const std = @import("std");
-const Tool = @import("root.zig").Tool;
-const ToolResult = @import("root.zig").ToolResult;
-const parseStringField = @import("shell.zig").parseStringField;
+const root = @import("root.zig");
+const Tool = root.Tool;
+const ToolResult = root.ToolResult;
+const JsonObjectMap = root.JsonObjectMap;
 const mem_root = @import("../memory/root.zig");
 const Memory = mem_root.Memory;
 
@@ -23,9 +24,9 @@ pub const MemoryForgetTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args_json: []const u8) anyerror!ToolResult {
+    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
         const self: *MemoryForgetTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args_json);
+        return self.execute(allocator, args);
     }
 
     fn vtableName(_: *anyopaque) []const u8 {
@@ -42,8 +43,8 @@ pub const MemoryForgetTool = struct {
         ;
     }
 
-    fn execute(self: *MemoryForgetTool, allocator: std.mem.Allocator, args_json: []const u8) !ToolResult {
-        const key = parseStringField(args_json, "key") orelse
+    fn execute(self: *MemoryForgetTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+        const key = root.getString(args, "key") orelse
             return ToolResult.fail("Missing 'key' parameter");
 
         const m = self.memory orelse {
@@ -84,7 +85,9 @@ test "memory_forget schema has key" {
 test "memory_forget executes without backend" {
     var mt = MemoryForgetTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"temp\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"temp\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "not configured") != null);
@@ -93,7 +96,9 @@ test "memory_forget executes without backend" {
 test "memory_forget missing key" {
     var mt = MemoryForgetTool{};
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{}");
+    const parsed = try root.parseTestArgs("{}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!result.success);
 }
 
@@ -104,7 +109,9 @@ test "memory_forget with real backend key not found" {
 
     var mt = MemoryForgetTool{ .memory = backend.memory() };
     const t = mt.tool();
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"nonexistent\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"nonexistent\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "No memory found") != null);
@@ -118,7 +125,9 @@ test "memory_forget with real backend returns appropriate message" {
     var mt = MemoryForgetTool{ .memory = backend.memory() };
     const t = mt.tool();
     // NoneMemory.forget always returns false (nothing to forget)
-    const result = try t.execute(std.testing.allocator, "{\"key\": \"test_key\"}");
+    const parsed = try root.parseTestArgs("{\"key\": \"test_key\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
     defer if (result.output.len > 0) std.testing.allocator.free(result.output);
     try std.testing.expect(result.success);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "No memory found with key: test_key") != null);
