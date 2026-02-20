@@ -646,6 +646,7 @@ fn providerEnvCandidates(name: []const u8) [3][]const u8 {
     if (std.mem.eql(u8, name, "perplexity")) return .{ "PERPLEXITY_API_KEY", "", "" };
     if (std.mem.eql(u8, name, "cohere")) return .{ "COHERE_API_KEY", "", "" };
     if (std.mem.eql(u8, name, "venice")) return .{ "VENICE_API_KEY", "", "" };
+    if (std.mem.eql(u8, name, "poe")) return .{ "POE_API_KEY", "", "" };
     if (std.mem.eql(u8, name, "moonshot") or std.mem.eql(u8, name, "kimi")) return .{ "MOONSHOT_API_KEY", "", "" };
     if (std.mem.eql(u8, name, "nvidia") or std.mem.eql(u8, name, "nvidia-nim") or std.mem.eql(u8, name, "build.nvidia.com")) return .{ "NVIDIA_API_KEY", "", "" };
     if (std.mem.eql(u8, name, "astrai")) return .{ "ASTRAI_API_KEY", "", "" };
@@ -745,6 +746,7 @@ pub fn classifyProvider(name: []const u8) ProviderKind {
         .{ "nvidia-nim", .compatible_provider },
         .{ "build.nvidia.com", .compatible_provider },
         .{ "astrai", .compatible_provider },
+        .{ "poe", .compatible_provider },
     });
 
     if (provider_map.get(name)) |kind| return kind;
@@ -819,6 +821,7 @@ pub fn compatibleProviderUrl(name: []const u8) ?[]const u8 {
         .{ "nvidia-nim", "https://integrate.api.nvidia.com/v1" },
         .{ "build.nvidia.com", "https://integrate.api.nvidia.com/v1" },
         .{ "astrai", "https://as-trai.com/v1" },
+        .{ "poe", "https://api.poe.com/v1" },
     });
     return map.get(name);
 }
@@ -870,6 +873,7 @@ pub fn compatibleProviderDisplayName(name: []const u8) []const u8 {
         .{ "nvidia-nim", "NVIDIA NIM" },
         .{ "build.nvidia.com", "NVIDIA NIM" },
         .{ "astrai", "Astrai" },
+        .{ "poe", "Poe" },
     });
     return map.get(name) orelse "Custom";
 }
@@ -1310,6 +1314,7 @@ test "classifyProvider identifies known providers" {
     try std.testing.expect(classifyProvider("mistral") == .compatible_provider);
     try std.testing.expect(classifyProvider("deepseek") == .compatible_provider);
     try std.testing.expect(classifyProvider("venice") == .compatible_provider);
+    try std.testing.expect(classifyProvider("poe") == .compatible_provider);
     try std.testing.expect(classifyProvider("custom:https://example.com") == .compatible_provider);
     try std.testing.expect(classifyProvider("openai-codex") == .openai_codex_provider);
     try std.testing.expect(classifyProvider("nonexistent") == .unknown);
@@ -1319,6 +1324,7 @@ test "compatibleProviderUrl returns correct URLs" {
     try std.testing.expectEqualStrings("https://api.venice.ai", compatibleProviderUrl("venice").?);
     try std.testing.expectEqualStrings("https://api.groq.com/openai", compatibleProviderUrl("groq").?);
     try std.testing.expectEqualStrings("https://api.deepseek.com", compatibleProviderUrl("deepseek").?);
+    try std.testing.expectEqualStrings("https://api.poe.com/v1", compatibleProviderUrl("poe").?);
     try std.testing.expect(compatibleProviderUrl("nonexistent") == null);
 }
 
