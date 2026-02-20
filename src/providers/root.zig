@@ -15,6 +15,7 @@ pub const router = @import("router.zig");
 pub const sse = @import("sse.zig");
 pub const claude_cli = @import("claude_cli.zig");
 pub const codex_cli = @import("codex_cli.zig");
+pub const openai_codex = @import("openai_codex.zig");
 
 // ════════════════════════════════════════════════════════════════════════════
 // Core Types
@@ -682,6 +683,7 @@ pub const ProviderKind = enum {
     compatible_provider,
     claude_cli_provider,
     codex_cli_provider,
+    openai_codex_provider,
     unknown,
 };
 
@@ -697,6 +699,7 @@ pub fn classifyProvider(name: []const u8) ProviderKind {
         .{ "google-gemini", .gemini_provider },
         .{ "claude-cli", .claude_cli_provider },
         .{ "codex-cli", .codex_cli_provider },
+        .{ "openai-codex", .openai_codex_provider },
         // OpenAI-compatible providers
         .{ "venice", .compatible_provider },
         .{ "vercel", .compatible_provider },
@@ -1308,6 +1311,7 @@ test "classifyProvider identifies known providers" {
     try std.testing.expect(classifyProvider("deepseek") == .compatible_provider);
     try std.testing.expect(classifyProvider("venice") == .compatible_provider);
     try std.testing.expect(classifyProvider("custom:https://example.com") == .compatible_provider);
+    try std.testing.expect(classifyProvider("openai-codex") == .openai_codex_provider);
     try std.testing.expect(classifyProvider("nonexistent") == .unknown);
 }
 

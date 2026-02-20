@@ -1130,6 +1130,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         compatible: providers.compatible.OpenAiCompatibleProvider,
         claude_cli: providers.claude_cli.ClaudeCliProvider,
         codex_cli: providers.codex_cli.CodexCliProvider,
+        openai_codex: providers.openai_codex.OpenAiCodexProvider,
     };
 
     const kind = providers.classifyProvider(cfg.default_provider);
@@ -1164,6 +1165,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
             .{ .codex_cli = p }
         else |_|
             .{ .openrouter = providers.openrouter.OpenRouterProvider.init(allocator, cfg.defaultProviderKey()) },
+        .openai_codex_provider => .{ .openai_codex = providers.openai_codex.OpenAiCodexProvider.init(allocator, null) },
         .unknown => .{ .openrouter = providers.openrouter.OpenRouterProvider.init(allocator, cfg.defaultProviderKey()) },
     };
 
@@ -1176,6 +1178,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         .compatible => |*p| p.provider(),
         .claude_cli => |*p| p.provider(),
         .codex_cli => |*p| p.provider(),
+        .openai_codex => |*p| p.provider(),
     };
 
     const supports_streaming = provider_i.supportsStreaming();

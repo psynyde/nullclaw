@@ -50,6 +50,7 @@ pub const ProviderHolder = union(enum) {
     gemini: providers.gemini.GeminiProvider,
     ollama: providers.ollama.OllamaProvider,
     compatible: providers.compatible.OpenAiCompatibleProvider,
+    openai_codex: providers.openai_codex.OpenAiCodexProvider,
 
     pub fn provider(self: *ProviderHolder) providers.Provider {
         return switch (self.*) {
@@ -59,6 +60,7 @@ pub const ProviderHolder = union(enum) {
             .gemini => |*p| p.provider(),
             .ollama => |*p| p.provider(),
             .compatible => |*p| p.provider(),
+            .openai_codex => |*p| p.provider(),
         };
     }
 };
@@ -106,6 +108,7 @@ pub const ChannelRuntime = struct {
                 api_key,
                 .bearer,
             ) },
+            .openai_codex_provider => .{ .openai_codex = providers.openai_codex.OpenAiCodexProvider.init(allocator, null) },
             .claude_cli_provider, .codex_cli_provider, .unknown => .{ .openrouter = providers.openrouter.OpenRouterProvider.init(allocator, api_key) },
         };
 
@@ -330,4 +333,5 @@ test "ProviderHolder tagged union fields" {
     try std.testing.expect(@hasField(ProviderHolder, "gemini"));
     try std.testing.expect(@hasField(ProviderHolder, "ollama"));
     try std.testing.expect(@hasField(ProviderHolder, "compatible"));
+    try std.testing.expect(@hasField(ProviderHolder, "openai_codex"));
 }
