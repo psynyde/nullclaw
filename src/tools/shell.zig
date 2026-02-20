@@ -214,7 +214,7 @@ test "shell tool schema has command" {
 }
 
 test "shell executes echo" {
-    var st = ShellTool{ .workspace_dir = "/tmp" };
+    var st = ShellTool{ .workspace_dir = "." };
     const t = st.tool();
     const parsed = try root.parseTestArgs("{\"command\": \"echo hello\"}");
     defer parsed.deinit();
@@ -226,7 +226,7 @@ test "shell executes echo" {
 }
 
 test "shell captures failing command" {
-    var st = ShellTool{ .workspace_dir = "/tmp" };
+    var st = ShellTool{ .workspace_dir = "." };
     const t = st.tool();
     const parsed = try root.parseTestArgs("{\"command\": \"ls /nonexistent_dir_xyz_42\"}");
     defer parsed.deinit();
@@ -237,7 +237,7 @@ test "shell captures failing command" {
 }
 
 test "shell missing command param" {
-    var st = ShellTool{ .workspace_dir = "/tmp" };
+    var st = ShellTool{ .workspace_dir = "." };
     const t = st.tool();
     const parsed = try root.parseTestArgs("{}");
     defer parsed.deinit();

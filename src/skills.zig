@@ -525,8 +525,8 @@ fn readSyncMarker(marker_path: []const u8, buf: []u8) ?i64 {
 
 /// Write a timestamp into the marker file, creating parent directories as needed.
 fn writeSyncMarkerWithTimestamp(allocator: std.mem.Allocator, marker_path: []const u8, timestamp: i64) !void {
-    if (std.mem.lastIndexOfScalar(u8, marker_path, '/')) |sep| {
-        std.fs.makeDirAbsolute(marker_path[0..sep]) catch |err| switch (err) {
+    if (std.fs.path.dirname(marker_path)) |dir| {
+        std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => return err,
         };

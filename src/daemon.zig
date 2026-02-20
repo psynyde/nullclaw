@@ -76,8 +76,8 @@ pub const DaemonState = struct {
 /// Compute the path to daemon_state.json from config.
 pub fn stateFilePath(allocator: std.mem.Allocator, config: *const Config) ![]u8 {
     // Use config directory (parent of config_path)
-    if (std.mem.lastIndexOfScalar(u8, config.config_path, '/')) |idx| {
-        return std.fmt.allocPrint(allocator, "{s}/daemon_state.json", .{config.config_path[0..idx]});
+    if (std.fs.path.dirname(config.config_path)) |dir| {
+        return std.fs.path.join(allocator, &.{ dir, "daemon_state.json" });
     }
     return allocator.dupe(u8, "daemon_state.json");
 }

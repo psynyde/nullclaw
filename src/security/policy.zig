@@ -344,12 +344,9 @@ fn skipEnvAssignments(s: []const u8) []const u8 {
     }
 }
 
-/// Extract basename from a path (everything after last '/')
+/// Extract basename from a path (everything after last separator)
 fn extractBasename(path: []const u8) []const u8 {
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
-        return path[idx + 1 ..];
-    }
-    return path;
+    return std.fs.path.basename(path);
 }
 
 /// Check if a command basename is in the high-risk set

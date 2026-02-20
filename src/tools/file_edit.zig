@@ -472,9 +472,21 @@ test "file_edit absolute path with allowed_paths works" {
     const abs_file = try std.fs.path.join(std.testing.allocator, &.{ ws_path, "test.txt" });
     defer std.testing.allocator.free(abs_file);
 
+    // JSON-escape backslashes in the path (needed on Windows where paths use \)
+    var escaped_buf: [1024]u8 = undefined;
+    var esc_len: usize = 0;
+    for (abs_file) |c| {
+        if (c == '\\') {
+            escaped_buf[esc_len] = '\\';
+            esc_len += 1;
+        }
+        escaped_buf[esc_len] = c;
+        esc_len += 1;
+    }
+
     // Use a different workspace but allow tmp_dir via allowed_paths
-    var args_buf: [512]u8 = undefined;
-    const args = try std.fmt.bufPrint(&args_buf, "{{\"path\": \"{s}\", \"old_text\": \"world\", \"new_text\": \"zig\"}}", .{abs_file});
+    var args_buf: [2048]u8 = undefined;
+    const args = try std.fmt.bufPrint(&args_buf, "{{\"path\": \"{s}\", \"old_text\": \"world\", \"new_text\": \"zig\"}}", .{escaped_buf[0..esc_len]});
     const parsed = try root.parseTestArgs(args);
     defer parsed.deinit();
 

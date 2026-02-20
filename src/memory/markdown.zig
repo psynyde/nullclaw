@@ -51,8 +51,7 @@ pub const MarkdownMemory = struct {
     }
 
     fn ensureDir(path: []const u8) !void {
-        if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
-            const dir = path[0..idx];
+        if (std.fs.path.dirname(path)) |dir| {
             std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
                 error.PathAlreadyExists => {},
                 else => return err,
