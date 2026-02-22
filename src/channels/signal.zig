@@ -220,11 +220,16 @@ pub const SignalChannel = struct {
         if (sender_raw.len == 0) return null;
 
         // Allowlist check.
-        if (!self.isSenderAllowed(sender_raw)) return null;
-
-        // Group allowlist check.
-        if (dm_group_id) |gid| {
-            if (!self.isGroupAllowed(gid)) return null;
+        if (dm_group_id) |_| {
+            // Group context: check group_allow_from for sender, fall back to allow_from
+            const group_allowed = if (self.group_allow_from.len > 0)
+                root.isAllowed(self.group_allow_from, sender_raw)
+            else
+                self.isSenderAllowed(sender_raw);
+            if (!group_allowed) return null;
+        } else {
+            // DM context: check allow_from
+            if (!self.isSenderAllowed(sender_raw)) return null;
         }
 
         // Determine message text and fetch attachments.
@@ -249,9 +254,6 @@ pub const SignalChannel = struct {
                     try text_buf.appendSlice(allocator, "[Attachment]");
                 }
             }
-        } else if (dm_attachment_ids.len > 0) {
-            if (text_buf.items.len > 0) try text_buf.appendSlice(allocator, "\n");
-            try text_buf.appendSlice(allocator, "[Attachment]");
         }
 
         if (text_buf.items.len == 0) return null;
@@ -461,7 +463,9 @@ pub const SignalChannel = struct {
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, envelope_json, .{}) catch return null;
         defer parsed.deinit();
 
+        if (parsed.value != .object) return null;
         const envelope = parsed.value.object.get("envelope") orelse return null;
+        if (envelope != .object) return null;
         const env_obj = envelope.object;
 
         const source = env_obj.get("source");
@@ -479,12 +483,14 @@ pub const SignalChannel = struct {
         // Check for story message
         if (env_obj.get("storyMessage")) |story| {
             has_story = true;
-            if (story.object.get("message")) |msg| {
-                if (msg == .string) {
-                    dm_message = msg.string;
-                } else if (msg == .object) {
-                    if (msg.object.get("timestamp")) |ts| {
-                        if (ts == .integer) dm_timestamp = @intCast(ts.integer);
+            if (story == .object) {
+                if (story.object.get("message")) |msg| {
+                    if (msg == .string) {
+                        dm_message = msg.string;
+                    } else if (msg == .object) {
+                        if (msg.object.get("timestamp")) |ts| {
+                            if (ts == .integer) dm_timestamp = @intCast(ts.integer);
+                        }
                     }
                 }
             }
@@ -492,24 +498,28 @@ pub const SignalChannel = struct {
 
         // Check for data message (regular message)
         if (env_obj.get("dataMessage")) |dm| {
-            const dm_obj = dm.object;
-            if (dm_obj.get("message")) |msg| {
-                if (msg == .string) dm_message = msg.string;
-            }
-            if (dm_obj.get("timestamp")) |ts| {
-                if (ts == .integer) dm_timestamp = @intCast(ts.integer);
-            }
-            if (dm_obj.get("groupInfo")) |gi| {
-                if (gi.object.get("groupId")) |gid| {
-                    if (gid == .string) dm_group_id = gid.string;
+            if (dm == .object) {
+                const dm_obj = dm.object;
+                if (dm_obj.get("message")) |msg| {
+                    if (msg == .string) dm_message = msg.string;
                 }
-            }
-            if (dm_obj.get("attachments")) |att| {
-                if (att == .array) {
-                    for (att.array.items) |item| {
-                        if (item == .object) {
-                            if (item.object.get("id")) |id_val| {
-                                if (id_val == .string) try dm_attachment_ids.append(self.allocator, id_val.string);
+                if (dm_obj.get("timestamp")) |ts| {
+                    if (ts == .integer) dm_timestamp = @intCast(ts.integer);
+                }
+                if (dm_obj.get("groupInfo")) |gi| {
+                    if (gi == .object) {
+                        if (gi.object.get("groupId")) |gid| {
+                            if (gid == .string) dm_group_id = gid.string;
+                        }
+                    }
+                }
+                if (dm_obj.get("attachments")) |att| {
+                    if (att == .array) {
+                        for (att.array.items) |item| {
+                            if (item == .object) {
+                                if (item.object.get("id")) |id_val| {
+                                    if (id_val == .string) try dm_attachment_ids.append(self.allocator, id_val.string);
+                                }
                             }
                         }
                     }
@@ -542,7 +552,8 @@ pub const SignalChannel = struct {
 
         // Use curl with SSE flags (-N for no-buffer, Accept header)
         // Use 10 second timeout - SSE returns when data arrives or timeout
-        const resp = root.http_util.curlGetSSE(allocator, url, "10") catch {
+        const resp = root.http_util.curlGetSSE(allocator, url, "10") catch |err| {
+            log.warn("Signal SSE poll failed: {}", .{err});
             return &.{};
         };
         defer allocator.free(resp);
@@ -562,32 +573,36 @@ pub const SignalChannel = struct {
             messages.deinit(allocator);
         }
 
+        var data_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer data_buf.deinit(allocator);
+
         var lines = std.mem.splitScalar(u8, resp, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \r");
-
-            // Skip empty lines and SSE comments (keepalive)
-            if (trimmed.len == 0 or trimmed[0] == ':') continue;
-
-            // Skip event: lines, we only care about data: lines
-            if (std.mem.startsWith(u8, trimmed, "event:")) continue;
-
-            // Look for data: prefix
-            if (!std.mem.startsWith(u8, trimmed, ENVELOPE_PREFIX)) continue;
-
-            // Extract JSON after "data:" (there's a space after the colon)
-            const json_start = trimmed[ENVELOPE_PREFIX.len..];
-            const json_trimmed = std.mem.trim(u8, json_start, " \r");
-
-            const envelope_json = json_trimmed;
-
-            if (self.parseSSEEnvelope(envelope_json)) |msg_opt| {
-                if (msg_opt) |msg| {
-                    try messages.append(allocator, msg);
+            if (trimmed.len == 0) {
+                // End of event — process accumulated data
+                if (data_buf.items.len > 0) {
+                    if (self.parseSSEEnvelope(data_buf.items)) |msg_opt| {
+                        if (msg_opt) |msg| try messages.append(allocator, msg);
+                    } else |_| {}
+                    data_buf.clearRetainingCapacity();
                 }
-            } else |_| {
-                // Parse error - skip this envelope
+                continue;
             }
+            if (trimmed[0] == ':') continue;
+            if (std.mem.startsWith(u8, trimmed, "event:")) continue;
+            if (std.mem.startsWith(u8, trimmed, ENVELOPE_PREFIX)) {
+                const json_start = trimmed[ENVELOPE_PREFIX.len..];
+                const json_trimmed = std.mem.trim(u8, json_start, " \r");
+                if (data_buf.items.len > 0) try data_buf.appendSlice(allocator, "\n");
+                try data_buf.appendSlice(allocator, json_trimmed);
+            }
+        }
+        // Handle final event if no trailing blank line
+        if (data_buf.items.len > 0) {
+            if (self.parseSSEEnvelope(data_buf.items)) |msg_opt| {
+                if (msg_opt) |msg| try messages.append(allocator, msg);
+            } else |_| {}
         }
 
         return try messages.toOwnedSlice(allocator);
@@ -1593,8 +1608,8 @@ test "process envelope dm accepted with empty allowed groups" {
     try std.testing.expect(!m.is_group);
 }
 
-test "process envelope group denied with empty allowed groups" {
-    // Empty group_allow_from = deny all groups.
+test "process envelope group with empty group_allow_from falls back to allow_from" {
+    // Empty group_allow_from = fall back to allow_from for sender check.
     const users = [_][]const u8{"*"};
     const ch = SignalChannel.init(
         std.testing.allocator,
@@ -1617,18 +1632,23 @@ test "process envelope group denied with empty allowed groups" {
         "group123", // group message
         &.{},
     );
-    try std.testing.expect(msg == null);
+    // Sender is in allow_from (wildcard), so accepted via fallback
+    try std.testing.expect(msg != null);
+    const m = msg.?;
+    defer m.deinit(std.testing.allocator);
+    try std.testing.expect(m.is_group);
 }
 
-test "process envelope group accepted when in allowed groups" {
+test "process envelope group denied when sender not in group_allow_from" {
+    // group_allow_from has specific senders; this sender is not in the list.
     const users = [_][]const u8{"*"};
-    const groups = [_][]const u8{"group123"};
+    const group_users = [_][]const u8{"+2222222222"};
     const ch = SignalChannel.init(
         std.testing.allocator,
         "http://127.0.0.1:8686",
         "+1234567890",
         &users,
-        &groups,
+        &group_users,
         true,
         true,
     );
@@ -1641,7 +1661,34 @@ test "process envelope group accepted when in allowed groups" {
         false,
         "hi",
         1000,
-        "group123", // allowed group
+        "group123",
+        &.{},
+    );
+    try std.testing.expect(msg == null);
+}
+
+test "process envelope group accepted when sender in group_allow_from" {
+    const users = [_][]const u8{"*"};
+    const group_users = [_][]const u8{"+1111111111"};
+    const ch = SignalChannel.init(
+        std.testing.allocator,
+        "http://127.0.0.1:8686",
+        "+1234567890",
+        &users,
+        &group_users,
+        true,
+        true,
+    );
+    const msg = try ch.processEnvelope(
+        std.testing.allocator,
+        "+1111111111",
+        "+1111111111",
+        null,
+        1000,
+        false,
+        "hi",
+        1000,
+        "group123",
         &.{},
     );
     try std.testing.expect(msg != null);
@@ -1650,7 +1697,7 @@ test "process envelope group accepted when in allowed groups" {
     try std.testing.expect(m.is_group);
     try std.testing.expectEqualStrings("group:group123", m.reply_target.?);
 
-    // Different group should be denied.
+    // Same sender in different group should also be accepted.
     const msg2 = try ch.processEnvelope(
         std.testing.allocator,
         "+1111111111",
@@ -1660,21 +1707,24 @@ test "process envelope group accepted when in allowed groups" {
         false,
         "hi",
         1000,
-        "other_group", // not in allowed groups
+        "other_group",
         &.{},
     );
-    try std.testing.expect(msg2 == null);
+    try std.testing.expect(msg2 != null);
+    const m2 = msg2.?;
+    defer m2.deinit(std.testing.allocator);
+    try std.testing.expect(m2.is_group);
 }
 
-test "process envelope group not in allowed groups" {
+test "process envelope group sender not in group_allow_from" {
     const users = [_][]const u8{"*"};
-    const groups = [_][]const u8{"allowed_group"};
+    const group_users = [_][]const u8{"+2222222222"};
     const ch = SignalChannel.init(
         std.testing.allocator,
         "http://127.0.0.1:8686",
         "+1234567890",
         &users,
-        &groups,
+        &group_users,
         true,
         true,
     );
@@ -1687,7 +1737,7 @@ test "process envelope group not in allowed groups" {
         false,
         "Hi",
         1000,
-        "other_group",
+        "some_group",
         &.{},
     );
     try std.testing.expect(msg == null);
@@ -1735,13 +1785,13 @@ test "process envelope uuid sender dm" {
 test "process envelope uuid sender in group" {
     const uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     const users = [_][]const u8{"*"};
-    const groups = [_][]const u8{"testgroup"};
+    const group_users = [_][]const u8{"*"};
     var ch = SignalChannel.init(
         std.testing.allocator,
         "http://127.0.0.1:8686",
         "+1234567890",
         &users,
-        &groups,
+        &group_users,
         true,
         true,
     );

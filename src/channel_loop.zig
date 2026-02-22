@@ -293,13 +293,21 @@ pub fn runSignalLoop(
 ) void {
     const signal_config = config.channels.signal orelse return;
 
+    // Env overrides for Signal
+    const env_http_url = std.process.getEnvVarOwned(allocator, "SIGNAL_HTTP_URL") catch null;
+    defer if (env_http_url) |v| allocator.free(v);
+    const env_account = std.process.getEnvVarOwned(allocator, "SIGNAL_ACCOUNT") catch null;
+    defer if (env_account) |v| allocator.free(v);
+    const effective_http_url = env_http_url orelse signal_config.http_url;
+    const effective_account = env_account orelse signal_config.account;
+
     // Heap-alloc SignalChannel for vtable pointer stability
     const sg_ptr = allocator.create(signal.SignalChannel) catch return;
     defer allocator.destroy(sg_ptr);
     sg_ptr.* = signal.SignalChannel.init(
         allocator,
-        signal_config.http_url,
-        signal_config.account,
+        effective_http_url,
+        effective_account,
         signal_config.allow_from,
         signal_config.group_allow_from,
         signal_config.ignore_attachments,
@@ -323,9 +331,15 @@ pub fn runSignalLoop(
         loop_state.last_activity.store(std.time.timestamp(), .release);
 
         for (messages) |msg| {
-            // Session key: "signal:{sender}"
+            // Session key: include group context for isolation
             var key_buf: [128]u8 = undefined;
-            const session_key = std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
+            const session_key = if (msg.is_group)
+                std.fmt.bufPrint(&key_buf, "signal:group:{s}:{s}", .{
+                    msg.reply_target orelse "unknown",
+                    msg.sender,
+                }) catch msg.sender
+            else
+                std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
 
             // Send typing indicator (best-effort)
             if (msg.reply_target) |target| {

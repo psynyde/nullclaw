@@ -125,7 +125,15 @@ pub fn hasSupervisedChannels(config: *const Config) bool {
         config.channels.imessage != null or
         config.channels.matrix != null or
         config.channels.whatsapp != null or
-        config.channels.signal != null;
+        config.channels.signal != null or
+        config.channels.irc != null or
+        config.channels.lark != null or
+        config.channels.dingtalk != null or
+        config.channels.email != null or
+        config.channels.line != null or
+        config.channels.qq != null or
+        config.channels.onebot != null or
+        config.channels.maixcam != null;
 }
 
 /// Shutdown signal — set to true to stop the daemon.

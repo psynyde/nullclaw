@@ -317,7 +317,7 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
             \\
             \\Commands:
             \\  list                          List configured channels
-            \\  start                         Start all configured channels
+            \\  start [telegram|signal]       Start a channel (default: first available)
             \\  doctor                        Run health checks
             \\  add <type> <config_json>      Add a channel
             \\  remove <name>                 Remove a channel
@@ -361,11 +361,23 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         if (cfg.channels.telegram != null) std.debug.print("  Telegram: configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.discord != null) std.debug.print("  Discord:  configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.slack != null) std.debug.print("  Slack:    configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.webhook != null) std.debug.print("  Webhook:  configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.matrix != null) std.debug.print("  Matrix:   configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.whatsapp != null) std.debug.print("  WhatsApp: configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.irc != null) std.debug.print("  IRC:      configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.lark != null) std.debug.print("  Lark:     configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.dingtalk != null) std.debug.print("  DingTalk: configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.signal != null) std.debug.print("  Signal:   configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.imessage != null) std.debug.print("  iMessage: configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.email != null) std.debug.print("  Email:    configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.line != null) std.debug.print("  Line:     configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.qq != null) std.debug.print("  QQ:       configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.onebot != null) std.debug.print("  OneBot:   configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.maixcam != null) std.debug.print("  MaixCam:  configured (use `channel start` to verify)\n", .{});
     } else if (std.mem.eql(u8, subcmd, "add")) {
         if (sub_args.len < 2) {
             std.debug.print("Usage: nullclaw channel add <type>\n", .{});
-            std.debug.print("Types: telegram, discord, slack, webhook, matrix, whatsapp, irc, lark, dingtalk\n", .{});
+            std.debug.print("Types: telegram, discord, slack, webhook, matrix, whatsapp, irc, lark, dingtalk, signal, email, line, qq, onebot, maixcam, imessage\n", .{});
             std.process.exit(1);
         }
         std.debug.print("To add a '{s}' channel, edit your config file:\n  {s}\n", .{ sub_args[1], cfg.config_path });
@@ -685,7 +697,10 @@ fn runOnboard(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
     }
 }
 
-// ── Channel Start (Telegram bot loop) ────────────────────────────
+// ── Channel Start ────────────────────────────────────────────────
+// Usage: nullclaw channel start [telegram|signal]
+// If a channel name is given, start that specific channel.
+// Otherwise, start the first available (Telegram first, then Signal).
 
 fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Load config
@@ -707,15 +722,35 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
         std.process.exit(1);
     }
 
-    // Run Signal if configured, otherwise run Telegram
-    if (signal_config != null) {
-        const sig_config = signal_config.?;
-        return runSignalChannel(allocator, args, &config, sig_config);
+    // Check if user specified a channel name
+    const requested: ?[]const u8 = if (args.len > 0) args[0] else null;
+
+    if (requested) |ch_name| {
+        if (std.mem.eql(u8, ch_name, "signal")) {
+            if (signal_config) |sig_config| {
+                return runSignalChannel(allocator, args[1..], &config, sig_config);
+            }
+            std.debug.print("Signal channel is not configured.\n", .{});
+            std.process.exit(1);
+        } else if (std.mem.eql(u8, ch_name, "telegram")) {
+            if (telegram_config) |tg_config| {
+                return runTelegramChannel(allocator, args[1..], config, tg_config);
+            }
+            std.debug.print("Telegram channel is not configured.\n", .{});
+            std.process.exit(1);
+        } else {
+            std.debug.print("Unknown channel: {s}. Supported: telegram, signal\n", .{ch_name});
+            std.process.exit(1);
+        }
     }
 
-    // Telegram path
-    const tg_config = telegram_config.?;
-    return runTelegramChannel(allocator, args, config, tg_config);
+    // No channel specified -- start first available (Telegram first, then Signal)
+    if (telegram_config) |tg_config| {
+        return runTelegramChannel(allocator, args, config, tg_config);
+    }
+    if (signal_config) |sig_config| {
+        return runSignalChannel(allocator, args, &config, sig_config);
+    }
 }
 
 // ── Signal Channel ─────────────────────────────────────────────────
@@ -770,10 +805,18 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         std.debug.print("\n", .{});
     }
 
+    // Env overrides for Signal
+    const env_http_url = std.process.getEnvVarOwned(allocator, "SIGNAL_HTTP_URL") catch null;
+    defer if (env_http_url) |v| allocator.free(v);
+    const env_account = std.process.getEnvVarOwned(allocator, "SIGNAL_ACCOUNT") catch null;
+    defer if (env_account) |v| allocator.free(v);
+    const effective_http_url = env_http_url orelse signal_config.http_url;
+    const effective_account = env_account orelse signal_config.account;
+
     var sg = yc.channels.signal.SignalChannel.init(
         allocator,
-        signal_config.http_url,
-        signal_config.account,
+        effective_http_url,
+        effective_account,
         signal_config.allow_from,
         signal_config.group_allow_from,
         signal_config.ignore_attachments,
@@ -869,8 +912,14 @@ fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, conf
         for (messages) |msg| {
             std.debug.print("[{s}] {s}: {s}\n", .{ msg.channel, msg.id, msg.content });
 
-            // Session key: "signal:{sender}"
-            const session_key = std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
+            // Session key: include group context for isolation
+            const session_key = if (msg.is_group)
+                std.fmt.bufPrint(&key_buf, "signal:group:{s}:{s}", .{
+                    msg.reply_target orelse "unknown",
+                    msg.sender,
+                }) catch msg.sender
+            else
+                std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
 
             const reply = session_mgr.processMessage(session_key, msg.content) catch |err| {
                 std.debug.print("  Agent error: {}\n", .{err});

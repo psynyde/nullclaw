@@ -676,6 +676,24 @@ fn checkChannels(allocator: std.mem.Allocator, cfg: *const Config, items: *std.A
         items.append(allocator, DiagItem.ok(cat, "IRC configured")) catch {};
     if (cfg.channels.signal != null)
         items.append(allocator, DiagItem.ok(cat, "Signal configured")) catch {};
+    if (cfg.channels.imessage != null)
+        items.append(allocator, DiagItem.ok(cat, "iMessage configured")) catch {};
+    if (cfg.channels.whatsapp != null)
+        items.append(allocator, DiagItem.ok(cat, "WhatsApp configured")) catch {};
+    if (cfg.channels.lark != null)
+        items.append(allocator, DiagItem.ok(cat, "Lark configured")) catch {};
+    if (cfg.channels.dingtalk != null)
+        items.append(allocator, DiagItem.ok(cat, "DingTalk configured")) catch {};
+    if (cfg.channels.email != null)
+        items.append(allocator, DiagItem.ok(cat, "Email configured")) catch {};
+    if (cfg.channels.line != null)
+        items.append(allocator, DiagItem.ok(cat, "Line configured")) catch {};
+    if (cfg.channels.qq != null)
+        items.append(allocator, DiagItem.ok(cat, "QQ configured")) catch {};
+    if (cfg.channels.onebot != null)
+        items.append(allocator, DiagItem.ok(cat, "OneBot configured")) catch {};
+    if (cfg.channels.maixcam != null)
+        items.append(allocator, DiagItem.ok(cat, "MaixCam configured")) catch {};
 }
 
 /// Check a specific diagnostic (utility for programmatic access).

@@ -48,6 +48,19 @@ pub const DiscordChannel = struct {
         };
     }
 
+    /// Initialize from a full DiscordConfig, passing all fields.
+    pub fn initFromConfig(allocator: std.mem.Allocator, cfg: @import("../config_types.zig").DiscordConfig) DiscordChannel {
+        return .{
+            .allocator = allocator,
+            .token = cfg.token,
+            .guild_id = cfg.guild_id,
+            .allow_bots = cfg.allow_bots,
+            .allow_from = cfg.allow_from,
+            .mention_only = cfg.mention_only,
+            .intents = cfg.intents,
+        };
+    }
+
     pub fn channelName(_: *DiscordChannel) []const u8 {
         return "discord";
     }
@@ -872,6 +885,25 @@ test "discord isMentioned with user id" {
 test "discord intents default" {
     const ch = DiscordChannel.init(std.testing.allocator, "tok", null, false);
     try std.testing.expectEqual(@as(u32, 37377), ch.intents);
+}
+
+test "discord initFromConfig passes all fields" {
+    const config_types = @import("../config_types.zig");
+    const cfg = config_types.DiscordConfig{
+        .token = "my-token",
+        .guild_id = "guild-1",
+        .allow_bots = true,
+        .allow_from = &.{ "user1", "user2" },
+        .mention_only = true,
+        .intents = 512,
+    };
+    const ch = DiscordChannel.initFromConfig(std.testing.allocator, cfg);
+    try std.testing.expectEqualStrings("my-token", ch.token);
+    try std.testing.expectEqualStrings("guild-1", ch.guild_id.?);
+    try std.testing.expect(ch.allow_bots);
+    try std.testing.expectEqual(@as(usize, 2), ch.allow_from.len);
+    try std.testing.expect(ch.mention_only);
+    try std.testing.expectEqual(@as(u32, 512), ch.intents);
 }
 
 test "discord intent bitmask guilds" {

@@ -1,34 +1,9 @@
 const std = @import("std");
 const root = @import("root.zig");
+const config_types = @import("../config_types.zig");
 const bus = @import("../bus.zig");
 
 const log = std.log.scoped(.qq);
-
-// ════════════════════════════════════════════════════════════════════════════
-// Configuration
-// ════════════════════════════════════════════════════════════════════════════
-
-pub const QQGroupPolicy = enum {
-    /// Allow all group messages.
-    allow,
-    /// Only allow messages from groups in the allowlist.
-    allowlist,
-};
-
-pub const QQConfig = struct {
-    /// QQ Bot AppID.
-    app_id: []const u8 = "",
-    /// QQ Bot AppSecret.
-    app_secret: []const u8 = "",
-    /// QQ Bot Token.
-    bot_token: []const u8 = "",
-    /// Whether to use the sandbox environment.
-    sandbox: bool = false,
-    /// Group message permission policy.
-    group_policy: QQGroupPolicy = .allow,
-    /// Allowed group IDs (used when group_policy == .allowlist).
-    group_allow_from: []const []const u8 = &.{},
-};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -229,7 +204,7 @@ pub fn buildAuthHeader(buf: []u8, app_id: []const u8, bot_token: []const u8) ![]
 }
 
 /// Check if a group ID is allowed by the given config.
-pub fn isGroupAllowed(config: QQConfig, group_id: []const u8) bool {
+pub fn isGroupAllowed(config: config_types.QQConfig, group_id: []const u8) bool {
     return switch (config.group_policy) {
         .allow => true,
         .allowlist => root.isAllowedExact(config.group_allow_from, group_id),
@@ -258,7 +233,7 @@ pub fn gatewayUrl(sandbox: bool) []const u8 {
 /// Message deduplication via ring buffer of 1024 recent message IDs.
 /// Auto-reconnect with 5s backoff.
 pub const QQChannel = struct {
-    config: QQConfig,
+    config: config_types.QQConfig,
     allocator: std.mem.Allocator,
     event_bus: ?*bus.Bus,
     dedup: DedupRing,
@@ -270,7 +245,7 @@ pub const QQChannel = struct {
     pub const MAX_MESSAGE_LEN: usize = 4096;
     pub const RECONNECT_DELAY_NS: u64 = 5 * std.time.ns_per_s;
 
-    pub fn init(allocator: std.mem.Allocator, config: QQConfig) QQChannel {
+    pub fn init(allocator: std.mem.Allocator, config: config_types.QQConfig) QQChannel {
         return .{
             .config = config,
             .allocator = allocator,
@@ -567,7 +542,7 @@ fn getJsonStringFromObj(val: std.json.Value, key: []const u8) ?[]const u8 {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "qq config defaults" {
-    const config = QQConfig{};
+    const config = config_types.QQConfig{};
     try std.testing.expectEqualStrings("", config.app_id);
     try std.testing.expectEqualStrings("", config.app_secret);
     try std.testing.expectEqualStrings("", config.bot_token);
@@ -578,7 +553,7 @@ test "qq config defaults" {
 
 test "qq config custom values" {
     const list = [_][]const u8{ "group1", "group2" };
-    const config = QQConfig{
+    const config = config_types.QQConfig{
         .app_id = "12345",
         .app_secret = "secret",
         .bot_token = "token",
@@ -750,20 +725,20 @@ test "qq buildAuthHeader" {
 }
 
 test "qq isGroupAllowed policy allow" {
-    const config = QQConfig{ .group_policy = .allow };
+    const config = config_types.QQConfig{ .group_policy = .allow };
     try std.testing.expect(isGroupAllowed(config, "anygroup"));
 }
 
 test "qq isGroupAllowed policy allowlist" {
     const list = [_][]const u8{ "group1", "group2" };
-    const config = QQConfig{ .group_policy = .allowlist, .group_allow_from = &list };
+    const config = config_types.QQConfig{ .group_policy = .allowlist, .group_allow_from = &list };
     try std.testing.expect(isGroupAllowed(config, "group1"));
     try std.testing.expect(isGroupAllowed(config, "group2"));
     try std.testing.expect(!isGroupAllowed(config, "group3"));
 }
 
 test "qq isGroupAllowed empty allowlist denies all" {
-    const config = QQConfig{ .group_policy = .allowlist, .group_allow_from = &.{} };
+    const config = config_types.QQConfig{ .group_policy = .allowlist, .group_allow_from = &.{} };
     try std.testing.expect(!isGroupAllowed(config, "anygroup"));
 }
 

@@ -234,8 +234,8 @@ pub const SignalConfig = struct {
     account: []const u8,
     allow_from: []const []const u8 = &.{},
     group_allow_from: []const []const u8 = &.{},
-    ignore_attachments: bool = true,
-    ignore_stories: bool = true,
+    ignore_attachments: bool = false,
+    ignore_stories: bool = false,
 };
 
 pub const EmailConfig = struct {
@@ -254,8 +254,8 @@ pub const EmailConfig = struct {
 };
 
 pub const LineConfig = struct {
-    access_token: []const u8 = "",
-    channel_secret: []const u8 = "",
+    access_token: []const u8,
+    channel_secret: []const u8,
     port: u16 = 3000,
     allow_from: []const []const u8 = &.{},
 };
@@ -272,6 +272,7 @@ pub const QQConfig = struct {
     sandbox: bool = false,
     group_policy: QQGroupPolicy = .allow,
     group_allow_from: []const []const u8 = &.{},
+    allow_from: []const []const u8 = &.{},
 };
 
 pub const OneBotConfig = struct {

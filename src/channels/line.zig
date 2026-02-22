@@ -1,5 +1,6 @@
 const std = @import("std");
 const root = @import("root.zig");
+const config_types = @import("../config_types.zig");
 
 const log = std.log.scoped(.line);
 
@@ -9,7 +10,7 @@ const log = std.log.scoped(.line);
 /// the Reply API (with replyToken) or Push API (direct to userId).
 pub const LineChannel = struct {
     allocator: std.mem.Allocator,
-    config: LineConfig,
+    config: config_types.LineConfig,
     bus: ?*anyopaque = null,
     running: bool = false,
 
@@ -17,7 +18,7 @@ pub const LineChannel = struct {
     pub const PUSH_URL = "https://api.line.me/v2/bot/message/push";
     pub const MAX_MESSAGE_LEN: usize = 5000;
 
-    pub fn init(allocator: std.mem.Allocator, config: LineConfig) LineChannel {
+    pub fn init(allocator: std.mem.Allocator, config: config_types.LineConfig) LineChannel {
         return .{
             .allocator = allocator,
             .config = config,
@@ -197,6 +198,39 @@ pub const LineChannel = struct {
         return result.toOwnedSlice(allocator);
     }
 
+    /// Parse webhook events and filter by allow_from config.
+    /// Events from users not in the allowlist are skipped.
+    pub fn parseAndFilterEvents(
+        self: *LineChannel,
+        payload: []const u8,
+    ) ![]LineEvent {
+        const events = try parseWebhookEvents(self.allocator, payload);
+
+        if (self.config.allow_from.len == 0) return events;
+
+        // Filter in-place: keep only allowed events
+        var kept: usize = 0;
+        for (events) |*ev| {
+            if (ev.user_id) |uid| {
+                if (!root.isAllowed(self.config.allow_from, uid)) {
+                    ev.deinit(self.allocator);
+                    continue;
+                }
+            }
+            events[kept] = ev.*;
+            kept += 1;
+        }
+
+        if (kept == events.len) return events;
+
+        // Shrink the slice
+        if (kept == 0) {
+            self.allocator.free(events);
+            return &.{};
+        }
+        return events[0..kept];
+    }
+
     // ── Channel vtable ──────────────────────────────────────────────
 
     fn vtableStart(ptr: *anyopaque) anyerror!void {
@@ -236,17 +270,6 @@ pub const LineChannel = struct {
     pub fn channel(self: *LineChannel) root.Channel {
         return .{ .ptr = @ptrCast(self), .vtable = &vtable };
     }
-};
-
-// ════════════════════════════════════════════════════════════════════════════
-// Config
-// ════════════════════════════════════════════════════════════════════════════
-
-pub const LineConfig = struct {
-    access_token: []const u8,
-    channel_secret: []const u8,
-    port: u16 = 3000,
-    allow_from: []const []const u8 = &.{},
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -321,7 +344,7 @@ test "line channel name" {
 }
 
 test "line config defaults" {
-    const config = LineConfig{
+    const config = config_types.LineConfig{
         .access_token = "tok",
         .channel_secret = "sec",
     };
@@ -329,7 +352,7 @@ test "line config defaults" {
 }
 
 test "line config custom port" {
-    const config = LineConfig{
+    const config = config_types.LineConfig{
         .access_token = "tok",
         .channel_secret = "sec",
         .port = 8080,
@@ -834,4 +857,70 @@ test "line parse postback event" {
     try std.testing.expectEqual(@as(usize, 1), events.len);
     try std.testing.expectEqualStrings("postback", events[0].event_type);
     try std.testing.expect(events[0].message_type == null);
+}
+
+test "line parseAndFilterEvents blocks unlisted user" {
+    const allocator = std.testing.allocator;
+    var ch = LineChannel.init(allocator, .{
+        .access_token = "tok",
+        .channel_secret = "sec",
+        .allow_from = &.{"Uallowed"},
+    });
+
+    const payload =
+        \\{"events":[{"type":"message","replyToken":"tok1","source":{"type":"user","userId":"Ublocked"},"timestamp":1700000000000,"message":{"id":"m1","type":"text","text":"Hello"}}]}
+    ;
+
+    const events = try ch.parseAndFilterEvents(payload);
+    defer allocator.free(events);
+
+    try std.testing.expectEqual(@as(usize, 0), events.len);
+}
+
+test "line parseAndFilterEvents permits listed user" {
+    const allocator = std.testing.allocator;
+    var ch = LineChannel.init(allocator, .{
+        .access_token = "tok",
+        .channel_secret = "sec",
+        .allow_from = &.{"U1234"},
+    });
+
+    const payload =
+        \\{"events":[{"type":"message","replyToken":"tok1","source":{"type":"user","userId":"U1234"},"timestamp":1700000000000,"message":{"id":"m1","type":"text","text":"Hello"}}]}
+    ;
+
+    const events = try ch.parseAndFilterEvents(payload);
+    defer {
+        for (events) |*e| {
+            var ev = e.*;
+            ev.deinit(allocator);
+        }
+        allocator.free(events);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), events.len);
+    try std.testing.expectEqualStrings("Hello", events[0].message_text.?);
+}
+
+test "line parseAndFilterEvents empty allow_from passes all" {
+    const allocator = std.testing.allocator;
+    var ch = LineChannel.init(allocator, .{
+        .access_token = "tok",
+        .channel_secret = "sec",
+    });
+
+    const payload =
+        \\{"events":[{"type":"message","replyToken":"tok1","source":{"type":"user","userId":"Uany"},"timestamp":1700000000000,"message":{"id":"m1","type":"text","text":"Hello"}}]}
+    ;
+
+    const events = try ch.parseAndFilterEvents(payload);
+    defer {
+        for (events) |*e| {
+            var ev = e.*;
+            ev.deinit(allocator);
+        }
+        allocator.free(events);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), events.len);
 }

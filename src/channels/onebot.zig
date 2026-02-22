@@ -1,23 +1,9 @@
 const std = @import("std");
 const root = @import("root.zig");
+const config_types = @import("../config_types.zig");
 const bus = @import("../bus.zig");
 
 const log = std.log.scoped(.onebot);
-
-// ════════════════════════════════════════════════════════════════════════════
-// Configuration
-// ════════════════════════════════════════════════════════════════════════════
-
-pub const OneBotConfig = struct {
-    /// WebSocket URL of the OneBot v11 implementation (e.g. go-cqhttp).
-    url: []const u8 = "ws://localhost:6700",
-    /// Access token for authentication (sent as Authorization header).
-    access_token: ?[]const u8 = null,
-    /// In group chats, only respond to messages starting with this prefix.
-    group_trigger_prefix: ?[]const u8 = null,
-    /// Users allowed to interact. Empty = allow all.
-    allow_from: []const []const u8 = &.{},
-};
 
 // ════════════════════════════════════════════════════════════════════════════
 // CQ Code Parsing
@@ -193,7 +179,7 @@ pub const DedupRing = struct {
 /// via WebSocket or HTTP API. Receives messages, parses CQ codes, publishes
 /// to the event bus. Sends outgoing messages via HTTP POST to /send_msg.
 pub const OneBotChannel = struct {
-    config: OneBotConfig,
+    config: config_types.OneBotConfig,
     allocator: std.mem.Allocator,
     event_bus: ?*bus.Bus,
     dedup: DedupRing,
@@ -202,7 +188,7 @@ pub const OneBotChannel = struct {
     pub const MAX_MESSAGE_LEN: usize = 4500;
     pub const RECONNECT_DELAY_NS: u64 = 5 * std.time.ns_per_s;
 
-    pub fn init(allocator: std.mem.Allocator, config: OneBotConfig) OneBotChannel {
+    pub fn init(allocator: std.mem.Allocator, config: config_types.OneBotConfig) OneBotChannel {
         return .{
             .config = config,
             .allocator = allocator,
@@ -258,6 +244,9 @@ pub const OneBotChannel = struct {
         const user_id = getJsonInt(val, "user_id") orelse return;
         var user_buf: [32]u8 = undefined;
         const user_str = std.fmt.bufPrint(&user_buf, "{d}", .{user_id}) catch return;
+
+        // Allowlist check
+        if (self.config.allow_from.len > 0 and !root.isAllowed(self.config.allow_from, user_str)) return;
 
         // Extract chat_id (group_id for group messages, user_id for private)
         const chat_id_int = if (is_group) getJsonInt(val, "group_id") orelse return else user_id;
@@ -628,8 +617,8 @@ test "deriveHttpBase http url passthrough" {
     try std.testing.expectEqualStrings("http://localhost:5700", result);
 }
 
-test "OneBotConfig defaults" {
-    const config = OneBotConfig{};
+test "config_types.OneBotConfig defaults" {
+    const config = config_types.OneBotConfig{};
     try std.testing.expectEqualStrings("ws://localhost:6700", config.url);
     try std.testing.expect(config.access_token == null);
     try std.testing.expect(config.group_trigger_prefix == null);
@@ -828,6 +817,69 @@ test "handleEvent group message with mention passes prefix check" {
     var msg = event_bus_inst.consumeInbound() orelse return try std.testing.expect(false);
     defer msg.deinit(alloc);
     try std.testing.expectEqualStrings(" help me", msg.content);
+}
+
+test "handleEvent allow_from blocks unlisted user" {
+    const alloc = std.testing.allocator;
+    var event_bus_inst = bus.Bus.init();
+    defer event_bus_inst.close();
+
+    var ch = OneBotChannel.init(alloc, .{
+        .allow_from = &.{"99999"},
+    });
+    ch.setBus(&event_bus_inst);
+    ch.running = true;
+
+    // user_id=12345 is NOT in allow_from
+    const event_json =
+        \\{"post_type":"message","message_type":"private","message_id":6001,
+        \\"user_id":12345,"raw_message":"blocked user","time":1700000000}
+    ;
+    try ch.handleEvent(event_json);
+
+    try std.testing.expectEqual(@as(usize, 0), event_bus_inst.inboundDepth());
+}
+
+test "handleEvent allow_from permits listed user" {
+    const alloc = std.testing.allocator;
+    var event_bus_inst = bus.Bus.init();
+    defer event_bus_inst.close();
+
+    var ch = OneBotChannel.init(alloc, .{
+        .allow_from = &.{"12345"},
+    });
+    ch.setBus(&event_bus_inst);
+    ch.running = true;
+
+    const event_json =
+        \\{"post_type":"message","message_type":"private","message_id":6002,
+        \\"user_id":12345,"raw_message":"allowed user","time":1700000000}
+    ;
+    try ch.handleEvent(event_json);
+
+    var msg = event_bus_inst.consumeInbound() orelse return try std.testing.expect(false);
+    defer msg.deinit(alloc);
+    try std.testing.expectEqualStrings("allowed user", msg.content);
+}
+
+test "handleEvent allow_from empty allows all" {
+    const alloc = std.testing.allocator;
+    var event_bus_inst = bus.Bus.init();
+    defer event_bus_inst.close();
+
+    var ch = OneBotChannel.init(alloc, .{});
+    ch.setBus(&event_bus_inst);
+    ch.running = true;
+
+    const event_json =
+        \\{"post_type":"message","message_type":"private","message_id":6003,
+        \\"user_id":12345,"raw_message":"anyone allowed","time":1700000000}
+    ;
+    try ch.handleEvent(event_json);
+
+    var msg = event_bus_inst.consumeInbound() orelse return try std.testing.expect(false);
+    defer msg.deinit(alloc);
+    try std.testing.expectEqualStrings("anyone allowed", msg.content);
 }
 
 test "extractParam finds correct values" {

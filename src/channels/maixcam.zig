@@ -1,5 +1,6 @@
 const std = @import("std");
 const root = @import("root.zig");
+const config_types = @import("../config_types.zig");
 const bus = @import("../bus.zig");
 
 const log = std.log.scoped(.maixcam);
@@ -15,7 +16,7 @@ const log = std.log.scoped(.maixcam);
 /// Outbound messages are broadcast as JSON to all connected devices.
 pub const MaixCamChannel = struct {
     allocator: std.mem.Allocator,
-    config: MaixCamConfig,
+    config: config_types.MaixCamConfig,
     event_bus: ?*bus.Bus = null,
     running: bool = false,
     clients: std.ArrayListUnmanaged(Client) = .empty,
@@ -28,7 +29,7 @@ pub const MaixCamChannel = struct {
         device_id: ?[]const u8 = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator, config: MaixCamConfig) MaixCamChannel {
+    pub fn init(allocator: std.mem.Allocator, config: config_types.MaixCamConfig) MaixCamChannel {
         return .{
             .allocator = allocator,
             .config = config,
@@ -421,22 +422,11 @@ pub const MaixCamChannel = struct {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// Config
-// ════════════════════════════════════════════════════════════════════════════
-
-pub const MaixCamConfig = struct {
-    port: u16 = 7777,
-    host: []const u8 = "0.0.0.0",
-    allow_from: []const []const u8 = &.{},
-    name: []const u8 = "maixcam",
-};
-
-// ════════════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════════════
 
 test "maixcam config defaults" {
-    const config = MaixCamConfig{};
+    const config = config_types.MaixCamConfig{};
     try std.testing.expectEqual(@as(u16, 7777), config.port);
     try std.testing.expectEqualStrings("0.0.0.0", config.host);
     try std.testing.expectEqual(@as(usize, 0), config.allow_from.len);
@@ -445,7 +435,7 @@ test "maixcam config defaults" {
 
 test "maixcam config custom values" {
     const allowlist = [_][]const u8{ "cam-01", "cam-02" };
-    const config = MaixCamConfig{
+    const config = config_types.MaixCamConfig{
         .port = 9999,
         .host = "192.168.1.100",
         .allow_from = &allowlist,

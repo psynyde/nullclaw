@@ -1,14 +1,15 @@
 const std = @import("std");
 const root = @import("root.zig");
+const config_types = @import("../config_types.zig");
 
 /// Email channel — IMAP polling for inbound, SMTP for outbound.
 pub const EmailChannel = struct {
     allocator: std.mem.Allocator,
-    config: EmailConfig,
+    config: config_types.EmailConfig,
     /// Tracks last Message-ID per sender for In-Reply-To/References headers.
     reply_message_ids: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, config: EmailConfig) EmailChannel {
+    pub fn init(allocator: std.mem.Allocator, config: config_types.EmailConfig) EmailChannel {
         return .{ .allocator = allocator, .config = config, .reply_message_ids = .empty };
     }
 
@@ -206,22 +207,6 @@ pub const EmailChannel = struct {
     pub fn channel(self: *EmailChannel) root.Channel {
         return .{ .ptr = @ptrCast(self), .vtable = &vtable };
     }
-};
-
-/// Email channel configuration.
-pub const EmailConfig = struct {
-    imap_host: []const u8 = "",
-    imap_port: u16 = 993,
-    imap_folder: []const u8 = "INBOX",
-    smtp_host: []const u8 = "",
-    smtp_port: u16 = 587,
-    smtp_tls: bool = true,
-    username: []const u8 = "",
-    password: []const u8 = "",
-    from_address: []const u8 = "",
-    poll_interval_secs: u64 = 60,
-    allow_from: []const []const u8 = &.{},
-    consent_granted: bool = true,
 };
 
 /// Bounded dedup set that evicts oldest entries when capacity is reached.
@@ -537,7 +522,7 @@ test "email sender multiple senders" {
 }
 
 test "email config defaults" {
-    const config = EmailConfig{};
+    const config = config_types.EmailConfig{};
     try std.testing.expectEqual(@as(u16, 993), config.imap_port);
     try std.testing.expectEqualStrings("INBOX", config.imap_folder);
     try std.testing.expectEqual(@as(u16, 587), config.smtp_port);
@@ -605,7 +590,7 @@ test "email sender short address not domain match" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "consent granted default is true" {
-    const config = EmailConfig{};
+    const config = config_types.EmailConfig{};
     try std.testing.expect(config.consent_granted);
 }
 
