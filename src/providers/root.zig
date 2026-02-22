@@ -48,6 +48,7 @@ pub const buildRequestBodyWithSystem = helpers.buildRequestBodyWithSystem;
 pub const isReasoningModel = helpers.isReasoningModel;
 pub const appendGenerationFields = helpers.appendGenerationFields;
 pub const convertToolsOpenAI = helpers.convertToolsOpenAI;
+pub const serializeMessageContent = helpers.serializeMessageContent;
 pub const convertToolsAnthropic = helpers.convertToolsAnthropic;
 pub const curlPostTimed = helpers.curlPostTimed;
 pub const extractContent = helpers.extractContent;
@@ -321,6 +322,8 @@ pub const Provider = struct {
         chat_with_tools: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, req: ChatRequest) anyerror!ChatResponse = null,
         /// Optional: returns true if provider supports streaming. Default: false.
         supports_streaming: ?*const fn (ptr: *anyopaque) bool = null,
+        /// Optional: returns true if provider supports vision/image input. Default: false.
+        supports_vision: ?*const fn (ptr: *anyopaque) bool = null,
         /// Optional: streaming chat. Default: null (falls back to chat() with single chunk).
         stream_chat: ?*const fn (
             ptr: *anyopaque,
@@ -377,6 +380,12 @@ pub const Provider = struct {
         return false;
     }
 
+    /// Returns true if provider supports vision/image input.
+    pub fn supportsVision(self: Provider) bool {
+        if (self.vtable.supports_vision) |f| return f(self.ptr);
+        return false;
+    }
+
     /// Chat with native tool support. Falls back to regular chat() if not implemented.
     pub fn chatWithTools(self: Provider, allocator: std.mem.Allocator, req: ChatRequest) !ChatResponse {
         if (self.vtable.chat_with_tools) |f| return f(self.ptr, allocator, req);
@@ -420,6 +429,7 @@ pub fn assertProviderInterface(comptime T: type) void {
     _ = vt.chatWithSystem;
     _ = vt.chat;
     _ = vt.supportsNativeTools;
+    _ = vt.supports_vision;
     _ = vt.getName;
     _ = vt.deinit;
 }
@@ -548,6 +558,66 @@ test "provider supportsStreaming returns false when vtable is null" {
     };
     const provider = Provider{ .ptr = @ptrCast(&dummy), .vtable = &vtable };
     try std.testing.expect(!provider.supportsStreaming());
+}
+
+test "provider supportsVision returns false when vtable supports_vision is null" {
+    const DummyProvider = struct {
+        fn chatWithSystem(_: *anyopaque, _: std.mem.Allocator, _: ?[]const u8, _: []const u8, _: []const u8, _: f64) anyerror![]const u8 {
+            return "";
+        }
+        fn chat(_: *anyopaque, _: std.mem.Allocator, _: ChatRequest, _: []const u8, _: f64) anyerror!ChatResponse {
+            return .{};
+        }
+        fn supNativeTools(_: *anyopaque) bool {
+            return false;
+        }
+        fn getName(_: *anyopaque) []const u8 {
+            return "dummy";
+        }
+        fn deinitFn(_: *anyopaque) void {}
+    };
+    var dummy: u8 = 0;
+    const vtable = Provider.VTable{
+        .chatWithSystem = DummyProvider.chatWithSystem,
+        .chat = DummyProvider.chat,
+        .supportsNativeTools = DummyProvider.supNativeTools,
+        .getName = DummyProvider.getName,
+        .deinit = DummyProvider.deinitFn,
+    };
+    const provider = Provider{ .ptr = @ptrCast(&dummy), .vtable = &vtable };
+    try std.testing.expect(!provider.supportsVision());
+}
+
+test "provider supportsVision delegates when supports_vision is set" {
+    const DummyProvider = struct {
+        fn chatWithSystem(_: *anyopaque, _: std.mem.Allocator, _: ?[]const u8, _: []const u8, _: []const u8, _: f64) anyerror![]const u8 {
+            return "";
+        }
+        fn chat(_: *anyopaque, _: std.mem.Allocator, _: ChatRequest, _: []const u8, _: f64) anyerror!ChatResponse {
+            return .{};
+        }
+        fn supNativeTools(_: *anyopaque) bool {
+            return false;
+        }
+        fn supVision(_: *anyopaque) bool {
+            return true;
+        }
+        fn getName(_: *anyopaque) []const u8 {
+            return "dummy";
+        }
+        fn deinitFn(_: *anyopaque) void {}
+    };
+    var dummy: u8 = 0;
+    const vtable = Provider.VTable{
+        .chatWithSystem = DummyProvider.chatWithSystem,
+        .chat = DummyProvider.chat,
+        .supportsNativeTools = DummyProvider.supNativeTools,
+        .supports_vision = DummyProvider.supVision,
+        .getName = DummyProvider.getName,
+        .deinit = DummyProvider.deinitFn,
+    };
+    const provider = Provider{ .ptr = @ptrCast(&dummy), .vtable = &vtable };
+    try std.testing.expect(provider.supportsVision());
 }
 
 test "provider chatWithTools falls back to chat when vtable is null" {

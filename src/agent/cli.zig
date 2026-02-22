@@ -149,7 +149,14 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
             agent.stream_ctx = @ptrCast(&stream_ctx);
         }
 
-        const response = try agent.turn(message);
+        const response = agent.turn(message) catch |err| {
+            if (err == error.ProviderDoesNotSupportVision) {
+                try w.print("Error: The current provider does not support image input. Switch to a vision-capable provider or remove [IMAGE:] attachments.\n", .{});
+                try w.flush();
+                return;
+            }
+            return err;
+        };
         defer allocator.free(response);
 
         if (supports_streaming) {
@@ -243,7 +250,11 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         repl_history.append(allocator, allocator.dupe(u8, line) catch continue) catch {};
 
         const response = agent.turn(line) catch |err| {
-            try w.print("Error: {}\n", .{err});
+            if (err == error.ProviderDoesNotSupportVision) {
+                try w.print("Error: The current provider does not support image input. Switch to a vision-capable provider or remove [IMAGE:] attachments.\n", .{});
+            } else {
+                try w.print("Error: {}\n", .{err});
+            }
             try w.flush();
             continue;
         };

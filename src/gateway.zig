@@ -795,7 +795,12 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
                                 // Build session key using bearer token if available
                                 var sk_buf: [128]u8 = undefined;
                                 const session_key = std.fmt.bufPrint(&sk_buf, "webhook:{s}", .{bearer orelse "anon"}) catch "webhook:anon";
-                                const reply = sm.processMessage(session_key, msg_text) catch null;
+                                const reply: ?[]const u8 = sm.processMessage(session_key, msg_text) catch |err| blk: {
+                                    if (err == error.ProviderDoesNotSupportVision) {
+                                        response_body = "{\"error\":\"provider does not support image input\"}";
+                                    }
+                                    break :blk null;
+                                };
                                 if (reply) |r| {
                                     defer allocator.free(r);
                                     const json_resp = std.fmt.allocPrint(req_allocator, "{{\"status\":\"ok\",\"response\":\"{s}\"}}", .{r}) catch null;
@@ -883,7 +888,14 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
                             if (session_mgr_opt) |*sm| {
                                 var kb: [64]u8 = undefined;
                                 const sk = std.fmt.bufPrint(&kb, "telegram:{d}", .{chat_id.?}) catch "telegram:0";
-                                const reply = sm.processMessage(sk, msg_text.?) catch null;
+                                const reply: ?[]const u8 = sm.processMessage(sk, msg_text.?) catch |err| blk: {
+                                    if (err == error.ProviderDoesNotSupportVision) {
+                                        if (state.telegram_bot_token.len > 0) {
+                                            sendTelegramReply(req_allocator, state.telegram_bot_token, chat_id.?, "The current provider does not support image input.") catch {};
+                                        }
+                                    }
+                                    break :blk null;
+                                };
                                 if (reply) |r| {
                                     defer allocator.free(r);
                                     // Send reply back to Telegram
@@ -948,7 +960,12 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
                             const msg_text = jsonStringField(b, "text") orelse jsonStringField(b, "body");
                             if (msg_text) |mt| {
                                 if (session_mgr_opt) |*sm| {
-                                    const reply = sm.processMessage("whatsapp", mt) catch null;
+                                    const reply: ?[]const u8 = sm.processMessage("whatsapp", mt) catch |err| blk: {
+                                        if (err == error.ProviderDoesNotSupportVision) {
+                                            response_body = "{\"error\":\"provider does not support image input\"}";
+                                        }
+                                        break :blk null;
+                                    };
                                     if (reply) |r| {
                                         defer allocator.free(r);
                                         response_body = req_allocator.dupe(u8, r) catch "{\"status\":\"received\"}";
@@ -971,7 +988,12 @@ pub fn run(allocator: std.mem.Allocator, host: []const u8, port: u16) !void {
                             const msg_text = jsonStringField(b, "text") orelse jsonStringField(b, "body");
                             if (msg_text) |mt| {
                                 if (session_mgr_opt) |*sm| {
-                                    const reply = sm.processMessage("whatsapp", mt) catch null;
+                                    const reply: ?[]const u8 = sm.processMessage("whatsapp", mt) catch |err| blk: {
+                                        if (err == error.ProviderDoesNotSupportVision) {
+                                            response_body = "{\"error\":\"provider does not support image input\"}";
+                                        }
+                                        break :blk null;
+                                    };
                                     if (reply) |r| {
                                         defer allocator.free(r);
                                         response_body = req_allocator.dupe(u8, r) catch "{\"status\":\"received\"}";

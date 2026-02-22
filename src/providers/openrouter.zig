@@ -187,7 +187,7 @@ pub const OpenRouterProvider = struct {
             try buf.appendSlice(allocator, "{\"role\":\"");
             try buf.appendSlice(allocator, msg.role.toSlice());
             try buf.appendSlice(allocator, "\",\"content\":");
-            try root.appendJsonString(&buf, allocator, msg.content);
+            try root.serializeMessageContent(&buf, allocator, msg);
 
             if (msg.tool_call_id) |tc_id| {
                 try buf.appendSlice(allocator, ",\"tool_call_id\":\"");
@@ -272,6 +272,7 @@ pub const OpenRouterProvider = struct {
         .chatWithSystem = chatWithSystemImpl,
         .chat = chatImpl,
         .supportsNativeTools = supportsNativeToolsImpl,
+        .supports_vision = supportsVisionImpl,
         .getName = getNameImpl,
         .deinit = deinitImpl,
         .warmup = warmupImpl,
@@ -343,6 +344,10 @@ pub const OpenRouterProvider = struct {
         return true;
     }
 
+    fn supportsVisionImpl(_: *anyopaque) bool {
+        return true;
+    }
+
     fn getNameImpl(_: *anyopaque) []const u8 {
         return "OpenRouter";
     }
@@ -368,7 +373,7 @@ pub const OpenRouterProvider = struct {
             try buf.appendSlice(allocator, "{\"role\":\"");
             try buf.appendSlice(allocator, msg.role.toSlice());
             try buf.appendSlice(allocator, "\",\"content\":");
-            try root.appendJsonString(&buf, allocator, msg.content);
+            try root.serializeMessageContent(&buf, allocator, msg);
             if (msg.tool_call_id) |tc_id| {
                 try buf.appendSlice(allocator, ",\"tool_call_id\":\"");
                 try buf.appendSlice(allocator, tc_id);

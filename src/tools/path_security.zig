@@ -41,7 +41,7 @@ else
     &SYSTEM_BLOCKED_PREFIXES_UNIX;
 
 /// Check whether a directory-style prefix matches (exact or followed by a path separator).
-fn pathStartsWith(path: []const u8, prefix: []const u8) bool {
+pub fn pathStartsWith(path: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, path, prefix)) return false;
     if (path.len == prefix.len) return true;
     const c = path[prefix.len];

@@ -268,6 +268,7 @@ pub const ReliableProvider = struct {
         .chatWithSystem = chatWithSystemImpl,
         .chat = chatImpl,
         .supportsNativeTools = supportsNativeToolsImpl,
+        .supports_vision = supportsVisionImpl,
         .getName = getNameImpl,
         .deinit = deinitImpl,
         .warmup = warmupImpl,
@@ -440,6 +441,15 @@ pub const ReliableProvider = struct {
         return false;
     }
 
+    fn supportsVisionImpl(ptr: *anyopaque) bool {
+        const self: *ReliableProvider = @ptrCast(@alignCast(ptr));
+        if (self.inner.supportsVision()) return true;
+        for (self.extras) |entry| {
+            if (entry.provider.supportsVision()) return true;
+        }
+        return false;
+    }
+
     fn getNameImpl(ptr: *anyopaque) []const u8 {
         const self: *ReliableProvider = @ptrCast(@alignCast(ptr));
         return self.inner.getName();
@@ -606,6 +616,7 @@ const MockInnerProvider = struct {
         .chatWithSystem = mockChatWithSystem,
         .chat = mockChat,
         .supportsNativeTools = mockSupportsNativeTools,
+        .supports_vision = mockSupportsVision,
         .getName = mockGetName,
         .deinit = mockDeinit,
         .warmup = mockWarmup,
@@ -651,6 +662,10 @@ const MockInnerProvider = struct {
         return self.supports_tools;
     }
 
+    fn mockSupportsVision(_: *anyopaque) bool {
+        return true;
+    }
+
     fn mockGetName(_: *anyopaque) []const u8 {
         return "MockProvider";
     }
@@ -677,6 +692,7 @@ const ModelAwareMock = struct {
         .chatWithSystem = modelChatWithSystem,
         .chat = modelChat,
         .supportsNativeTools = modelSupportsNativeTools,
+        .supports_vision = modelSupportsVision,
         .getName = modelGetName,
         .deinit = modelDeinit,
     };
@@ -751,6 +767,10 @@ const ModelAwareMock = struct {
     fn modelSupportsNativeTools(ptr: *anyopaque) bool {
         const self: *ModelAwareMock = @ptrCast(@alignCast(ptr));
         return self.supports_tools;
+    }
+
+    fn modelSupportsVision(_: *anyopaque) bool {
+        return true;
     }
 
     fn modelGetName(_: *anyopaque) []const u8 {

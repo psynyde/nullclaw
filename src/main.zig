@@ -878,6 +878,7 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
                 std.debug.print("  Agent error: {}\n", .{err});
                 const err_msg = switch (err) {
                     error.CurlFailed, error.CurlReadError, error.CurlWaitError => "Network error. Please try again.",
+                    error.ProviderDoesNotSupportVision => "The current provider does not support image input. Switch to a vision-capable provider or remove [IMAGE:] attachments.",
                     error.OutOfMemory => "Out of memory.",
                     else => "An error occurred. Try again or /new for a fresh session.",
                 };
