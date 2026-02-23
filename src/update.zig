@@ -265,10 +265,7 @@ pub const PlatformTarget = enum {
     }
 };
 
-pub fn getCurrentPlatform() ?PlatformTarget {
-    const os = builtin.os.tag;
-    const arch = builtin.cpu.arch;
-
+fn platformFromParts(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?PlatformTarget {
     if (os == .linux) {
         if (arch == .x86_64) return .linux_x86_64;
         if (arch == .aarch64) return .linux_aarch64;
@@ -278,8 +275,11 @@ pub fn getCurrentPlatform() ?PlatformTarget {
     } else if (os == .windows) {
         if (arch == .x86_64) return .windows_x86_64;
     }
-
     return null;
+}
+
+pub fn getCurrentPlatform() ?PlatformTarget {
+    return platformFromParts(builtin.os.tag, builtin.cpu.arch);
 }
 
 // ── Asset URL Finding ─────────────────────────────────────────────────
@@ -422,4 +422,23 @@ test "getCurrentPlatform" {
 test "stripV" {
     try std.testing.expectEqualStrings("2026.2.21", stripV("v2026.2.21"));
     try std.testing.expectEqualStrings("2026.2.21", stripV("2026.2.21"));
+}
+
+test "PlatformTarget.assetName covers all release assets" {
+    try std.testing.expectEqualStrings("nullclaw-linux-x86_64.bin", PlatformTarget.linux_x86_64.assetName());
+    try std.testing.expectEqualStrings("nullclaw-linux-aarch64.bin", PlatformTarget.linux_aarch64.assetName());
+    try std.testing.expectEqualStrings("nullclaw-macos-aarch64.bin", PlatformTarget.macos_aarch64.assetName());
+    try std.testing.expectEqualStrings("nullclaw-macos-x86_64.bin", PlatformTarget.macos_x86_64.assetName());
+    try std.testing.expectEqualStrings("nullclaw-windows-x86_64.exe", PlatformTarget.windows_x86_64.assetName());
+}
+
+test "platformFromParts maps supported and unsupported targets" {
+    try std.testing.expectEqual(PlatformTarget.linux_x86_64, platformFromParts(.linux, .x86_64).?);
+    try std.testing.expectEqual(PlatformTarget.linux_aarch64, platformFromParts(.linux, .aarch64).?);
+    try std.testing.expectEqual(PlatformTarget.macos_aarch64, platformFromParts(.macos, .aarch64).?);
+    try std.testing.expectEqual(PlatformTarget.macos_x86_64, platformFromParts(.macos, .x86_64).?);
+    try std.testing.expectEqual(PlatformTarget.windows_x86_64, platformFromParts(.windows, .x86_64).?);
+
+    try std.testing.expect(platformFromParts(.windows, .aarch64) == null);
+    try std.testing.expect(platformFromParts(.freebsd, .x86_64) == null);
 }
