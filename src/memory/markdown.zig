@@ -15,6 +15,7 @@ const MemoryEntry = root.MemoryEntry;
 pub const MarkdownMemory = struct {
     workspace_dir: []const u8,
     allocator: std.mem.Allocator,
+    owns_self: bool = false,
 
     const Self = @This();
 
@@ -315,6 +316,9 @@ pub const MarkdownMemory = struct {
     fn implDeinit(ptr: *anyopaque) void {
         const self_: *Self = @ptrCast(@alignCast(ptr));
         self_.deinit();
+        if (self_.owns_self) {
+            self_.allocator.destroy(self_);
+        }
     }
 
     const vtable = Memory.VTable{
