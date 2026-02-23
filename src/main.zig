@@ -29,6 +29,7 @@ const Command = enum {
     migrate,
     models,
     auth,
+    update,
     help,
 };
 
@@ -51,6 +52,7 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "migrate", .migrate },
         .{ "models", .models },
         .{ "auth", .auth },
+        .{ "update", .update },
         .{ "help", .help },
         .{ "--help", .help },
         .{ "-h", .help },
@@ -99,6 +101,7 @@ pub fn main() !void {
         .migrate => try runMigrate(allocator, sub_args),
         .models => try runModels(allocator, sub_args),
         .auth => try runAuth(allocator, sub_args),
+        .update => try runUpdate(allocator, sub_args),
     }
 }
 
@@ -1428,6 +1431,30 @@ fn runAuth(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
     }
 }
 
+// ── Update ─────────────────────────────────────────────────────────
+
+fn runUpdate(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
+    var opts = yc.update.Options{ .check_only = false, .yes = false };
+
+    var i: usize = 0;
+    while (i < sub_args.len) : (i += 1) {
+        if (std.mem.eql(u8, sub_args[i], "--check")) {
+            opts.check_only = true;
+        } else if (std.mem.eql(u8, sub_args[i], "--yes")) {
+            opts.yes = true;
+        } else {
+            std.debug.print("Unknown option: {s}\n", .{sub_args[i]});
+            std.debug.print("Usage: nullclaw update [--check] [--yes]\n", .{});
+            std.process.exit(1);
+        }
+    }
+
+    yc.update.run(allocator, opts) catch |err| {
+        std.debug.print("Update failed: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+}
+
 fn printAuthUsage() void {
     std.debug.print(
         \\Usage: nullclaw auth <command> <provider> [options]
@@ -1691,6 +1718,7 @@ fn printUsage() void {
         \\  migrate     Migrate data from other agent runtimes
         \\  models      Manage provider model catalogs
         \\  auth        Manage OAuth authentication (OpenAI Codex)
+        \\  update      Check for and install updates
         \\  help        Show this help
         \\
         \\OPTIONS:
@@ -1707,6 +1735,7 @@ fn printUsage() void {
         \\  migrate openclaw [--dry-run] [--source PATH]
         \\  models refresh
         \\  auth <login|status|logout> <provider> [--import-codex]
+        \\  update [--check] [--yes]
         \\
     ;
     std.debug.print("{s}", .{usage});
@@ -1722,5 +1751,6 @@ test "parse known commands" {
     try std.testing.expectEqual(.migrate, parseCommand("migrate").?);
     try std.testing.expectEqual(.models, parseCommand("models").?);
     try std.testing.expectEqual(.auth, parseCommand("auth").?);
+    try std.testing.expectEqual(.update, parseCommand("update").?);
     try std.testing.expect(parseCommand("unknown") == null);
 }
