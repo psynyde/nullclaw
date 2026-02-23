@@ -155,12 +155,14 @@ pub const FileWriteTool = struct {
         var file = tmp_file.?;
         defer file.close();
 
-        if (existing_mode) |mode| {
-            if (mode != 0) {
-                file.chmod(mode) catch |err| {
-                    const msg = try std.fmt.allocPrint(allocator, "Failed to preserve file mode: {}", .{err});
-                    return ToolResult{ .success = false, .output = "", .error_msg = msg };
-                };
+        if (comptime std.fs.has_executable_bit) {
+            if (existing_mode) |mode| {
+                if (mode != 0) {
+                    file.chmod(mode) catch |err| {
+                        const msg = try std.fmt.allocPrint(allocator, "Failed to preserve file mode: {}", .{err});
+                        return ToolResult{ .success = false, .output = "", .error_msg = msg };
+                    };
+                }
             }
         }
 
