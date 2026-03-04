@@ -203,6 +203,12 @@ fn annCandidateLimit(limit: u32, candidate_multiplier: u32, min_candidates: u32)
     return @max(scaled, @max(limit, min_candidates));
 }
 
+fn clampU32ToSqliteInt(value: u32) c_int {
+    const max_sqlite_int: u64 = @intCast(std.math.maxInt(c_int));
+    const clamped: u64 = @min(@as(u64, value), max_sqlite_int);
+    return @intCast(clamped);
+}
+
 fn mix64(x_raw: u64) u64 {
     var x = x_raw;
     x ^= x >> 30;
@@ -731,12 +737,15 @@ pub const SqliteAnnVectorStore = struct {
         _ = c.sqlite3_bind_int(stmt, 2, @intCast(bands[1]));
         _ = c.sqlite3_bind_int(stmt, 3, @intCast(bands[2]));
         _ = c.sqlite3_bind_int(stmt, 4, @intCast(bands[3]));
-        _ = c.sqlite3_bind_int(stmt, 5, @intCast(candidate_limit));
+        _ = c.sqlite3_bind_int(stmt, 5, clampU32ToSqliteInt(candidate_limit));
 
         var candidates: std.ArrayListUnmanaged(VectorResult) = .empty;
+        var should_cleanup_candidates = true;
         errdefer {
-            for (candidates.items) |*r| r.deinit(alloc);
-            candidates.deinit(alloc);
+            if (should_cleanup_candidates) {
+                for (candidates.items) |*r| r.deinit(alloc);
+                candidates.deinit(alloc);
+            }
         }
 
         var lowest_idx: usize = 0;
@@ -768,6 +777,7 @@ pub const SqliteAnnVectorStore = struct {
         if (candidate_rows < max_results or candidates.items.len < max_results) {
             for (candidates.items) |*r| r.deinit(alloc);
             candidates.deinit(alloc);
+            should_cleanup_candidates = false;
             return exactSearchSqlite(self.db, alloc, query_embedding, max_results);
         }
 
@@ -779,6 +789,7 @@ pub const SqliteAnnVectorStore = struct {
 
         const result = try alloc.dupe(VectorResult, candidates.items);
         candidates.deinit(alloc);
+        should_cleanup_candidates = false;
         return result;
     }
 
@@ -1098,6 +1109,11 @@ test "ann candidate limit respects multiplier and minimum" {
     try std.testing.expectEqual(@as(u32, 64), annCandidateLimit(1, 4, 64));
     try std.testing.expectEqual(@as(u32, 120), annCandidateLimit(10, 12, 64));
     try std.testing.expectEqual(@as(u32, 20), annCandidateLimit(10, 2, 5));
+}
+
+test "sqlite bind int clamp handles u32 overflow safely" {
+    const max_sqlite_int: c_int = std.math.maxInt(c_int);
+    try std.testing.expectEqual(max_sqlite_int, clampU32ToSqliteInt(std.math.maxInt(u32)));
 }
 
 test "projection coeff handles large dimension indices without overflow" {

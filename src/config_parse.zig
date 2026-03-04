@@ -926,10 +926,18 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                                 self.memory.search.store.pgvector_table = try self.allocator.dupe(u8, v.string);
                             };
                             if (store.get("ann_candidate_multiplier")) |v| if (v == .integer) {
-                                self.memory.search.store.ann_candidate_multiplier = @intCast(v.integer);
+                                if (v.integer >= 0) {
+                                    const raw_u64: u64 = @intCast(v.integer);
+                                    const clamped_u64 = @min(raw_u64, @as(u64, std.math.maxInt(u32)));
+                                    self.memory.search.store.ann_candidate_multiplier = @intCast(clamped_u64);
+                                }
                             };
                             if (store.get("ann_min_candidates")) |v| if (v == .integer) {
-                                self.memory.search.store.ann_min_candidates = @intCast(v.integer);
+                                if (v.integer >= 0) {
+                                    const raw_u64: u64 = @intCast(v.integer);
+                                    const clamped_u64 = @min(raw_u64, @as(u64, std.math.maxInt(u32)));
+                                    self.memory.search.store.ann_min_candidates = @intCast(clamped_u64);
+                                }
                             };
                         }
                     }
