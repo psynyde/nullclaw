@@ -1083,6 +1083,7 @@ fn runWorkspaceEdit(_: std.mem.Allocator, args: []const []const u8, cfg: yc.conf
         std.debug.print("Failed to build file path\n", .{});
         std.process.exit(1);
     };
+    defer std.heap.page_allocator.free(filepath);
 
     // Determine editor: $VISUAL, $EDITOR, fallback to vi
     const editor = std.posix.getenv("VISUAL") orelse std.posix.getenv("EDITOR") orelse "vi";
